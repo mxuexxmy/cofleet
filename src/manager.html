@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>聚机 · CoFleet</title>
+<style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:64px auto;padding:0 24px;background:#f7f7f3;color:#253b37}h1{font-size:32px}p{line-height:1.7}input,button{font:inherit;padding:10px;border:1px solid #a8b8af;border-radius:5px}button{background:#253b37;color:white;cursor:pointer}table{border-collapse:collapse;width:100%;margin-top:24px}td,th{text-align:left;padding:14px 8px;border-bottom:1px solid #d9dfd9}#notice{min-height:24px}</style>
+<h1>聚机 <small>CoFleet</small></h1><p>设备连接原型</p>
+<form id="login"><label>测试访问凭据 <input id="token" type="password" required autocomplete="off"></label> <button>连接管理端</button> <button id="logout" type="button">断开</button></form>
+<p id="notice" role="status">输入凭据后查看节点。凭据仅保存在当前页面内存。</p>
+<table><thead><tr><th>设备</th><th>系统 / 架构</th><th>连接</th><th>接收新任务</th><th>最后上报</th></tr></thead><tbody id="devices"></tbody></table>
+<script>
+let token='',generation=0,platformLogin=false;
+const notice=document.querySelector('#notice'),rows=document.querySelector('#devices');
+document.querySelector('#login').onsubmit=e=>{e.preventDefault();token=document.querySelector('#token').value;document.querySelector('#token').value='';generation++;refresh()};
+document.querySelector('#logout').onclick=()=>{token='';generation++;rows.replaceChildren();notice.textContent='已断开'};
+async function refresh(){if(!token&&!platformLogin)return;const current=generation;try{const r=await fetch('api/v1/devices',{headers:platformLogin?{}:{Authorization:'Bearer '+token},cache:'no-store',signal:AbortSignal.timeout(5000)});if(current!==generation)return;if(!r.ok)throw new Error(r.status===401?(platformLogin?'登录失效，请在懒猫客户端重新登录':'凭据无效'):'管理端暂不可用');const devices=await r.json();if(current!==generation)return;rows.replaceChildren();for(const d of devices){const row=document.createElement('tr');for(const text of [d.name,d.os+' / '+d.arch,d.online?'在线':'离线',d.accepting_tasks?'允许':'已暂停',new Date(d.last_seen_unix*1000).toLocaleString()]){const cell=document.createElement('td');cell.textContent=text;row.append(cell)}rows.append(row)}notice.textContent=devices.length?'已连接，每 5 秒刷新':'等待电脑连接'}catch(e){if(current===generation)notice.textContent=e.message}}
+fetch('api/v1/auth-mode').then(r=>r.json()).then(mode=>{if(mode.auth==='lazycat'){platformLogin=true;document.querySelector('#login').hidden=true;refresh()}}).catch(()=>{});
+setInterval(refresh,5000);
+</script></html>

@@ -1,0 +1,4 @@
+buildscript: sh scripts/build-lpk.sh
+manifest: ./lzc-manifest.yml
+contentdir: ./.local/lpk-content
+pkgout: ./dist

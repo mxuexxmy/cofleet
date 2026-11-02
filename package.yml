@@ -1,0 +1,15 @@
+package: cloud.lazycat.app.cofleet.test
+version: "0.1.0"
+name: 聚机验证版
+description: CoFleet 设备连接与控制中枢验证版（x86_64，不执行任务）
+min_os_version: "1.6.0"
+permissions:
+  required: []
+  optional: []
+locales:
+  zh-CN:
+    name: 聚机验证版
+    description: 设备连接与控制中枢验证版（x86_64，不执行任务）
+  en-US:
+    name: CoFleet Test
+    description: Device connectivity and control hub prototype

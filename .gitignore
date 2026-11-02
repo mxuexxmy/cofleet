@@ -1,0 +1,22 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+.local/
+*.log
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+
+# Rust build output and development state
+/target/
+/.cofleet-dev/
+__pycache__/
+
+# Local deployment artifacts
+/dist/
+
+# Private deployment results (publish sanitized examples only)
+/docs/deployment/verification.json

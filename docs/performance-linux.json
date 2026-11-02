@@ -1,0 +1,45 @@
+{
+  "measured_at": "2026-11-02T23:28:20+0800",
+  "system": "Linux-7.2.15-1-omarchy-x86_64-with-glibc2.44",
+  "cpu": "x86_64",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "transport": "websocket-v1",
+  "build": "release",
+  "duration_seconds": 30.0,
+  "warmup_seconds": 5,
+  "nodes": 1,
+  "heartbeat_seconds": 5,
+  "browser_included": false,
+  "processes": {
+    "cofleet-manager": {
+      "mean_rss_mib": 4.47,
+      "peak_rss_mib": 4.47,
+      "mean_pss_mib": 2.07,
+      "mean_private_mib": 2.06,
+      "rss_growth_kib": 4,
+      "cpu_percent_one_core": 0.0,
+      "threads": 1,
+      "binary_bytes": 2037784
+    },
+    "cofleet-agent": {
+      "mean_rss_mib": 5.15,
+      "peak_rss_mib": 5.16,
+      "mean_pss_mib": 2.76,
+      "mean_private_mib": 2.75,
+      "rss_growth_kib": 4,
+      "cpu_percent_one_core": 0.0,
+      "threads": 1,
+      "binary_bytes": 4497864
+    },
+    "cofleet-tray": {
+      "mean_rss_mib": 29.92,
+      "peak_rss_mib": 29.98,
+      "mean_pss_mib": 13.63,
+      "mean_private_mib": 12.33,
+      "rss_growth_kib": 192,
+      "cpu_percent_one_core": 0.0,
+      "threads": 7,
+      "binary_bytes": 2214280
+    }
+  }
+}

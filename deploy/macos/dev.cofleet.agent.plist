@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- LaunchDaemon template: replace USERNAME and all paths before installation.
+     Run as the desktop user to let that user's tray access the private socket.
+     Agent supports SIGTERM; neither launchd nor this template is tested on macOS yet. -->
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.cofleet.agent</string>
+  <key>UserName</key><string>USERNAME</string>
+  <key>ProgramArguments</key><array>
+    <string>/usr/local/bin/cofleet-agent</string>
+    <string>--data-dir</string><string>/Users/USERNAME/Library/Application Support/dev.cofleet.cofleet</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ThrottleInterval</key><integer>5</integer>
+  <key>Umask</key><integer>63</integer>
+</dict></plist>

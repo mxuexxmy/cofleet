@@ -1,0 +1,25 @@
+# System-service example. Create a dedicated unprivileged cofleet user and
+# /var/lib/cofleet (0700), then initialize its config before enabling.
+[Unit]
+Description=CoFleet node Agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=cofleet
+Group=cofleet
+StateDirectory=cofleet
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/local/bin/cofleet-agent --data-dir /var/lib/cofleet
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/cofleet
+
+[Install]
+WantedBy=multi-user.target

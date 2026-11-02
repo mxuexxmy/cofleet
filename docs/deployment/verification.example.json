@@ -1,0 +1,19 @@
+{
+  "measured_at": "2026-11-02T23:37:21.892264+08:00",
+  "manager": "https://cofleet-test.example-box.heiyu.space",
+  "box": "example-box",
+  "checks": {
+    "real_platform_login": true,
+    "anonymous_rejected": 307,
+    "forged_user_header_rejected": 307,
+    "real_wss_agent_connection": true,
+    "pause_resume_propagated": true,
+    "hub_command_and_reply": true,
+    "hub_restart_reconnect_same_device": true,
+    "agent_exit_marks_offline": true
+  },
+  "platform_user": "example-user",
+  "device_id": "00000000-0000-4000-8000-000000000001",
+  "test_agent_running": false,
+  "note": "Sanitized deployment test result; instance, user and device identifiers are examples."
+}
