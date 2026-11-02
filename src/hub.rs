@@ -36,6 +36,7 @@ pub struct Device {
     pub last_seen_unix: u64,
     pub online: bool,
     pub last_report_id: Option<Uuid>,
+    pub planning_capacity: Option<crate::resources::PlanningCapacity>,
 }
 impl Hub {
     pub async fn devices(&self, user: &str) -> Vec<Device> {
@@ -49,6 +50,11 @@ impl Hub {
                 online: r.session.is_some()
                     && r.seen_at.elapsed().as_secs() < (r.state.heartbeat_secs * 3).max(15),
                 last_report_id: r.last_report,
+                planning_capacity: r
+                    .state
+                    .resources
+                    .as_ref()
+                    .map(|resources| r.state.resource_policy.capacity(resources)),
             })
             .collect();
         devices.sort_by_key(|v| v.state.device_id);
@@ -230,6 +236,8 @@ mod tests {
             accepting_tasks: true,
             heartbeat_secs: 5,
             version: "test".into(),
+            resources: None,
+            resource_policy: Default::default(),
         }
     }
     #[tokio::test]

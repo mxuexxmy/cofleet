@@ -9,6 +9,10 @@ pub struct Heartbeat {
     pub accepting_tasks: bool,
     pub heartbeat_secs: u64,
     pub version: String,
+    #[serde(default)]
+    pub resources: Option<crate::resources::ResourceSnapshot>,
+    #[serde(default)]
+    pub resource_policy: crate::resources::ResourcePolicy,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -20,6 +24,10 @@ pub struct AgentStatus {
     pub connected: bool,
     pub last_success_unix: Option<u64>,
     pub last_error: Option<String>,
+    #[serde(default)]
+    pub resources: Option<crate::resources::ResourceSnapshot>,
+    #[serde(default)]
+    pub resource_policy: crate::resources::ResourcePolicy,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -28,6 +36,9 @@ pub enum LocalRequest {
     Status,
     Pause,
     Resume,
+    SetResourcePolicy {
+        policy: crate::resources::ResourcePolicy,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -54,6 +65,8 @@ impl Heartbeat {
             && self.os.len() <= 32
             && self.arch.len() <= 32
             && self.version.len() <= 64
+            && self.resource_policy.validate().is_ok()
+            && self.resources.as_ref().is_none_or(|r| r.valid())
     }
 }
 
@@ -86,4 +99,21 @@ pub enum HubMessage {
     RequestReport {
         request_id: uuid::Uuid,
     },
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+    #[test]
+    fn legacy_v1_heartbeat_needs_no_resource_fields() {
+        let state: Heartbeat = serde_json::from_value(serde_json::json!({
+            "device_id": "00000000-0000-4000-8000-000000000001",
+            "name": "legacy", "os": "linux", "arch": "x86_64",
+            "accepting_tasks": true, "heartbeat_secs": 5, "version": "0.1.0"
+        }))
+        .unwrap();
+        assert!(state.valid());
+        assert!(state.resources.is_none());
+        assert_eq!(state.resource_policy, Default::default());
+    }
 }

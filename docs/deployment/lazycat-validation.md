@@ -76,3 +76,13 @@ python3 scripts/verify-lazycat.py \
 管理端节点表仍为内存状态，重启后由在线 Agent 重新上报；本轮成功不代表已实现任务执行、持久状态库或生产设备配对授权。
 
 应用包 ID 改变会创建独立应用，不是对历史测试实例原地升级。安装新包前应明确旧实例与 `cofleet-test` 子域名的处理方式；本文不执行卸载或迁移。
+
+## 0.2.0 更新验证（2026-11-03）
+
+已在同一应用 ID 下升级到 0.2.0，并重启本地 Agent 与托盘。节点设备 ID 和原有预留设置均保留，没有新增平台权限。验证结果见 [resources-validation.example.json](resources-validation.example.json)，本次规范来源与摘要见 [resources-calibration.json](resources-calibration.json)。
+
+真实微服已收到 CPU、内存、Agent 所在文件系统、系统版本及运行时间；规划额度按本机预留计算，主机请求状态仍可完成。管理页 HTML、CSS、JavaScript 和 favicon 内容与当前构建一致。已在浏览器检查设备在线、设备离线、管理中心不可达、桌面和 390 像素手机布局。
+
+14 项 Rust 测试、本地进程闭环、预留持久化/非法值拒绝及托盘测试通过。修复了 Windows 配置替换前未关闭写入句柄的问题；此修复尚待后续 Windows CI 运行验证，不能视为 Windows 实机已验收。
+
+本次运行时瞬时采样中 Linux Agent RSS 约 8 MiB，托盘约 30 MiB；采样含资源采集，不属于长期内存或 CPU 验收。历史 performance 文件仍记录其标明版本的短时基线，不应用于推断 0.2.0 的长期表现。

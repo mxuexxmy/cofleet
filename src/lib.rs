@@ -9,3 +9,5 @@ pub mod auth;
 pub mod hub;
 
 pub mod lazycat;
+
+pub mod resources;

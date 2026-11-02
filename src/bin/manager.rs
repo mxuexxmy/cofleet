@@ -140,6 +140,42 @@ async fn main() -> Result<()> {
                 )
             }),
         )
+        .route(
+            "/manager.css",
+            get(|| async {
+                (
+                    [
+                        (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+                        (header::CACHE_CONTROL, "no-cache"),
+                    ],
+                    include_str!("../manager.css"),
+                )
+            }),
+        )
+        .route(
+            "/manager.js",
+            get(|| async {
+                (
+                    [
+                        (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+                        (header::CACHE_CONTROL, "no-cache"),
+                    ],
+                    include_str!("../manager.js"),
+                )
+            }),
+        )
+        .route(
+            "/app-icon.png",
+            get(|| async {
+                (
+                    [
+                        (header::CONTENT_TYPE, "image/png"),
+                        (header::CACHE_CONTROL, "public, max-age=86400"),
+                    ],
+                    include_bytes!("../../assets/cofleet-icon-256.png").as_slice(),
+                )
+            }),
+        )
         .route("/healthz", get(|| async { "ok" }))
         .route(
             "/api/v1/auth-mode",

@@ -26,7 +26,7 @@ struct Args {
 #[derive(Debug)]
 enum UiEvent {
     Menu(String),
-    Status(std::result::Result<LocalResponse, String>),
+    Status(std::result::Result<Box<LocalResponse>, String>),
 }
 enum Action {
     Pause,
@@ -85,6 +85,7 @@ fn main() -> Result<()> {
             };
             let result = runtime
                 .block_on(ipc::request(&dir, command))
+                .map(Box::new)
                 .map_err(|_| "Agent 未运行或本地连接失败".into());
             if proxy.send_event(UiEvent::Status(result)).is_err() {
                 break;

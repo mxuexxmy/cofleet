@@ -8,6 +8,7 @@ use cofleet::{
         AgentMessage, AgentStatus, Heartbeat, HubMessage, LocalRequest, LocalResponse,
         MAX_FRAME_BYTES, PROTOCOL_VERSION, unix_now,
     },
+    resources::ResourceMonitor,
 };
 use futures_util::{SinkExt, StreamExt};
 use std::{path::PathBuf, sync::Arc, time::Duration};
@@ -26,6 +27,7 @@ struct Args {
 struct State {
     config: Config,
     status: AgentStatus,
+    monitor: ResourceMonitor,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -42,8 +44,11 @@ async fn main() -> Result<()> {
             connected: false,
             last_success_unix: None,
             last_error: None,
+            resources: None,
+            resource_policy: config.resource_policy.clone(),
         },
         config,
+        monitor: ResourceMonitor::start(args.data_dir.clone())?,
     }));
     let notify = Arc::new(Notify::new());
     let heartbeat = tokio::spawn(heartbeat_loop(state.clone(), notify.clone()));
@@ -62,21 +67,31 @@ async fn main() -> Result<()> {
                     let result: Result<()> = async {
                         let command: LocalRequest = ipc::read_json(&mut stream).await?;
                         let mut state = state.lock().await;
+                        let mut next = state.config.clone();
+                        let changing = match command {
+                            LocalRequest::Pause => { next.accepting_tasks = false; true },
+                            LocalRequest::Resume => { next.accepting_tasks = true; true },
+                            LocalRequest::SetResourcePolicy { policy } => { next.resource_policy = policy; true },
+                            LocalRequest::Status => false,
+                        };
                         let mut error = None;
-                        let paused = match command { LocalRequest::Pause => Some(false), LocalRequest::Resume => Some(true), LocalRequest::Status => None };
-                        if let Some(accepting) = paused {
-                            // Reload before updating to preserve offline edits, but require a restart for connection/identity changes.
+                        if changing {
                             match Config::load(&dir) {
-                                Ok(mut config) if config.device_id == state.config.device_id && config.manager_url == state.config.manager_url && config.token == state.config.token && config.auth == state.config.auth && config.lzc_core_config == state.config.lzc_core_config && config.heartbeat_secs == state.config.heartbeat_secs && config.name == state.config.name => {
-                                    config.accepting_tasks = accepting;
-                                    match config.save(&dir) {
-                                        Ok(()) => { state.config = config; state.status.accepting_tasks = accepting; notify.notify_one(); },
-                                        Err(_) => error = Some("cannot persist setting; state unchanged".into()),
+                                Ok(config) if config == state.config => {
+                                    match next.validate().and_then(|()| next.save(&dir)) {
+                                        Ok(()) => {
+                                            state.status.accepting_tasks = next.accepting_tasks;
+                                            state.status.resource_policy = next.resource_policy.clone();
+                                            state.config = next;
+                                            notify.notify_one();
+                                        },
+                                        Err(_) => error = Some("invalid setting or persistence failed; state unchanged".into()),
                                     }
                                 }
                                 _ => error = Some("configuration changed or unreadable; restart Agent before changing state".into()),
                             }
                         }
+                        state.status.resources = state.monitor.snapshot();
                         let response = LocalResponse { status: Some(state.status.clone()), error };
                         drop(state);
                         ipc::write_json(&mut stream, &response).await
@@ -94,7 +109,8 @@ async fn main() -> Result<()> {
 
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
-fn heartbeat(config: &Config) -> Heartbeat {
+fn heartbeat(state: &State) -> Heartbeat {
+    let config = &state.config;
     Heartbeat {
         device_id: config.device_id,
         name: config.name.clone(),
@@ -103,6 +119,8 @@ fn heartbeat(config: &Config) -> Heartbeat {
         accepting_tasks: config.accepting_tasks,
         heartbeat_secs: config.heartbeat_secs,
         version: env!("CARGO_PKG_VERSION").into(),
+        resources: state.monitor.snapshot(),
+        resource_policy: config.resource_policy.clone(),
     }
 }
 async fn mark_success(state: &Arc<Mutex<State>>) {
@@ -182,7 +200,7 @@ async fn control_session(
     .await??;
     let hello = AgentMessage::Hello {
         protocol_version: PROTOCOL_VERSION,
-        state: heartbeat(config),
+        state: heartbeat(&*state.lock().await),
     };
     tokio::time::timeout(
         Duration::from_secs(5),
@@ -222,7 +240,7 @@ async fn control_session(
                 match frame? {
                     Message::Text(text) => match serde_json::from_str::<HubMessage>(&text)? {
                         HubMessage::Ack { .. } => { mark_success(&state).await; idle.as_mut().reset(tokio::time::Instant::now()+Duration::from_secs(idle_secs)); continue; },
-                        HubMessage::RequestReport { request_id } => AgentMessage::Report { request_id, state: heartbeat(&state.lock().await.config) },
+                        HubMessage::RequestReport { request_id } => AgentMessage::Report { request_id, state: heartbeat(&*state.lock().await) },
                         _ => anyhow::bail!("unexpected hub message"),
                     },
                     Message::Ping(bytes) => { tokio::time::timeout(Duration::from_secs(5),sink.send(Message::Pong(bytes))).await??; continue; },
@@ -236,8 +254,8 @@ async fn control_session(
                 anyhow::ensure!(login_cookie.as_deref() == Some(current.as_str()), "LazyCat login changed; reconnect required");
                 continue;
             }
-            _ = interval.tick() => AgentMessage::Heartbeat { state: heartbeat(&state.lock().await.config) },
-            _ = notify.notified() => AgentMessage::Heartbeat { state: heartbeat(&state.lock().await.config) },
+            _ = interval.tick() => AgentMessage::Heartbeat { state: heartbeat(&*state.lock().await) },
+            _ = notify.notified() => AgentMessage::Heartbeat { state: heartbeat(&*state.lock().await) },
             _ = &mut idle => anyhow::bail!("hub acknowledgement timeout"),
         };
         send_message(&mut sink, &message).await?;

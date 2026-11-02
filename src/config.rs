@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     pub device_id: uuid::Uuid,
     pub name: String,
@@ -18,6 +18,8 @@ pub struct Config {
     pub lzc_core_config: Option<PathBuf>,
     pub heartbeat_secs: u64,
     pub accepting_tasks: bool,
+    #[serde(default)]
+    pub resource_policy: crate::resources::ResourcePolicy,
 }
 
 pub fn data_dir() -> PathBuf {
@@ -55,6 +57,7 @@ pub fn private_dir(path: &Path) -> Result<()> {
 
 impl Config {
     pub fn validate(&self) -> Result<()> {
+        self.resource_policy.validate()?;
         let url = reqwest::Url::parse(&self.manager_url).context("invalid manager URL")?;
         let loopback = matches!(
             url.host_str(),
@@ -137,6 +140,8 @@ impl Config {
             let mut file = options.open(&tmp)?;
             file.write_all(toml::to_string_pretty(self)?.as_bytes())?;
             file.sync_all()?;
+            // Windows ReplaceFileW needs the replacement writer closed first.
+            drop(file);
             #[cfg(windows)]
             {
                 // Windows rename cannot replace an existing file; use ReplaceFileW below.
@@ -207,6 +212,7 @@ mod tests {
             lzc_core_config: None,
             heartbeat_secs: 5,
             accepting_tasks: true,
+            resource_policy: Default::default(),
         };
         assert!(c.validate().is_ok());
         c.manager_url = "http://example.com".into();
@@ -228,6 +234,7 @@ mod tests {
             lzc_core_config: None,
             heartbeat_secs: 5,
             accepting_tasks: true,
+            resource_policy: Default::default(),
         };
         c.save(&dir).unwrap();
         c.accepting_tasks = false;

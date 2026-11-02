@@ -86,6 +86,8 @@ fn state(device_id: Uuid, name: &str) -> Heartbeat {
         accepting_tasks: true,
         heartbeat_secs: 1,
         version: "test".into(),
+        resources: None,
+        resource_policy: Default::default(),
     }
 }
 async fn receive<S>(socket: &mut tokio_tungstenite::WebSocketStream<S>) -> HubMessage

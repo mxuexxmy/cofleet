@@ -1,0 +1,11 @@
+{
+  "verified_at": "2026-11-03T00:28:36.949819+08:00",
+  "version": "0.2.0",
+  "same_device_identity": true,
+  "policy_preserved": true,
+  "resource_snapshot_valid": true,
+  "planning_capacity_valid": true,
+  "report_reply": true,
+  "web_assets_match": true,
+  "local_runtime_alive": true
+}

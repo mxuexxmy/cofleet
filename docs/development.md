@@ -112,3 +112,19 @@ cargo run --bin cofleetctl -- --data-dir .cofleet-dev/lazycat init \
 `cargo test --locked` 另外验证模拟 Ingress 的账号隔离、伪造 Header 拒绝、同设备重连替换、请求 ID 应答及非法协议/超大帧断开。模拟身份不等同真实懒猫认证测试。
 
 当前 LPK 包 ID 为 `xyz.mxue.lzc.app.cofleet`，构建配置使用 `assets/cofleet-icon-256.png`。网页通过管理端内嵌的 `/favicon.ico` 提供多尺寸透明图标。包 ID 与子域名分别配置，当前子域名仍为 `cofleet-test`。
+
+## 0.2.0 资源监测与本机预留
+
+Agent 每 5 秒采集一次 CPU 总使用率、逻辑线程数、总内存与可用内存、系统版本和运行时间。首次 CPU 采样显示为采集中，不用 0% 代替缺失数据。采集在独立线程完成，不枚举进程、网卡地址或磁盘挂载路径。磁盘仅统计 Agent 数据目录所在文件系统，不能视为全部物理磁盘的总和。
+
+管理页支持设备搜索、只看在线、设备详情和资源规划额度。设备离线后保留最后快照；管理 API 不可达时显示状态待确认，不将无法确认当作离线或在线。WSL 资源标记为执行环境，不能与同机 Windows 宿主重复累计。
+
+在 Agent 所在电脑设置预留（使用与 Agent 相同的 --data-dir）：
+
+    cargo run --bin cofleetctl -- --data-dir .cofleet-dev/node reserve --cpu-threads 2 --memory-mib 2048
+
+两个参数均需明确提供；设置 0 表示不预留。设置经受权限约束的本地 IPC 提交，校验与落盘成功后立即上报，重启 Agent 后仍保留。默认均为 0，旧配置无需迁移。编辑配置文件中的 resource_policy 表后需要重启 Agent，运行中的 Agent 会拒绝覆盖外部修改。
+
+规划额度 = 采集总量减去预留（最少为 0），不代表瞬时空闲资源，不会限制现有进程，也尚未作为调度承诺或任务运行的强制限制。当前仍没有执行真实任务、管理容器或远程修改本机预留的接口。
+
+资源字段是 v1 协议的可选扩展；旧 Agent 可以连接新版中枢，管理页将提示尚未收到资源信息。CPU 使用率首次需要两个采样，正常至少 5 秒后可见。age_secs 使用 Agent 本地单调时间计算缓存年龄，以便资源采集停滞时提示过期。

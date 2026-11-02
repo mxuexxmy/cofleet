@@ -80,6 +80,19 @@ class Smoke(unittest.TestCase):
         self.wait_for(lambda: self.status()['connected'])
         self.wait_for(lambda: len(self.devices()) == 1)
         identity = self.devices()[0]['device_id']
+        self.wait_for(lambda: self.status().get('resources'))
+        resources = self.status()['resources']
+        self.assertGreater(resources['logical_cpus'], 0)
+        self.assertGreater(resources['total_memory_bytes'], 0)
+        self.assertLessEqual(resources['available_memory_bytes'], resources['total_memory_bytes'])
+        self.ctl('reserve', '--cpu-threads', '1', '--memory-mib', '128')
+        self.wait_for(lambda: self.devices()[0]['resource_policy']['reserved_memory_mib'] == 128)
+        current = self.devices()[0]
+        self.assertEqual(current['planning_capacity']['cpu_threads'], max(0, current['resources']['logical_cpus'] - 1))
+        self.assertEqual(current['planning_capacity']['memory_bytes'], max(0, current['resources']['total_memory_bytes'] - 128*1024*1024))
+        invalid = self.ctl('reserve', '--cpu-threads', '1', '--memory-mib', str(2**64-1), check=False)
+        self.assertNotEqual(invalid.returncode, 0)
+        self.assertEqual(self.status()['resource_policy']['reserved_memory_mib'], 128)
         # A manager command is delivered down the existing Agent-initiated socket.
         req = urllib.request.Request(self.url + f'/api/v1/devices/{identity}/refresh', data=b'', headers={'Authorization': 'Bearer ' + TOKEN}, method='POST')
         with urllib.request.urlopen(req, timeout=3) as response:
@@ -97,6 +110,7 @@ class Smoke(unittest.TestCase):
         self.wait_for(lambda: self.status()['connected'])
         self.assertFalse(self.status()['accepting_tasks'])
         self.assertEqual(self.status()['device_id'], identity)
+        self.assertEqual(self.status()['resource_policy']['reserved_memory_mib'], 128)
         manager.terminate()
         manager.wait(timeout=5)
         self.wait_for(lambda: not self.status()['connected'])

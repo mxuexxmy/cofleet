@@ -33,6 +33,13 @@ enum Command {
     Status,
     Pause,
     Resume,
+    /// 本机资源预留，用于规划额度；不会限制已运行进程
+    Reserve {
+        #[arg(long)]
+        cpu_threads: u32,
+        #[arg(long)]
+        memory_mib: u64,
+    },
     /// 显示配置路径，不输出凭据；修改连接设置后重启 Agent
     ConfigPath,
 }
@@ -64,6 +71,7 @@ async fn main() -> Result<()> {
                 lzc_core_config,
                 heartbeat_secs,
                 accepting_tasks: true,
+                resource_policy: Default::default(),
             }
             .save(&args.data_dir)?;
             println!("Created {}", args.data_dir.join("agent.toml").display());
@@ -74,6 +82,15 @@ async fn main() -> Result<()> {
                 Command::Status => LocalRequest::Status,
                 Command::Pause => LocalRequest::Pause,
                 Command::Resume => LocalRequest::Resume,
+                Command::Reserve {
+                    cpu_threads,
+                    memory_mib,
+                } => LocalRequest::SetResourcePolicy {
+                    policy: cofleet::resources::ResourcePolicy {
+                        reserved_cpu_threads: cpu_threads,
+                        reserved_memory_mib: memory_mib,
+                    },
+                },
                 _ => unreachable!(),
             };
             let response = ipc::request(&args.data_dir, command).await?;
