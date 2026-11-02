@@ -1,4 +1,4 @@
-package: cloud.lazycat.app.cofleet.test
+package: xyz.mxue.lzc.app.cofleet
 version: "0.1.0"
 name: 聚机验证版
 description: CoFleet 设备连接与控制中枢验证版（x86_64，不执行任务）

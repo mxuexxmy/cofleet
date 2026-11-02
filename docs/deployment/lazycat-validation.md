@@ -2,12 +2,16 @@
 
 验证日期：2026-11-02（Asia/Shanghai）。
 
-## 已部署实例
+最新状态：新包 `xyz.mxue.lzc.app.cofleet` 已安装并运行，容器 `xyzmxuelzcappcofleet-app-1` 健康。本地常驻 Agent 与托盘已启动，验证节点在线、中枢请求应答和真实入口 `/favicon.ico` 返回内容均通过。实际地址与本机进程信息保存在被 Git 忽略的 `.local/runtime/`，不在公开文档中披露。
+
+以下实例与验证结果保留首次部署的历史信息。
+
+## 首次部署实例
 
 - 微服：一台已验证的 x86_64 设备，实例名称已脱敏。
 - 系统：`lzcos v1.6.2+fix.4`，x86_64。
 - CLI：`lzc-cli 2.0.9`，通过现有 `mise exec node@26.8.2 -- lzc-cli` 调用，未修改系统 Node 配置。
-- 包 ID：`cloud.lazycat.app.cofleet.test`，版本 `0.1.0`。
+- 首次验证包 ID（历史）：`cloud.lazycat.app.cofleet.test`，版本 `0.1.0`。
 - 入口格式：`https://cofleet-test.<YOUR-BOX>.heiyu.space`，实际实例地址不在公开仓库中发布。
 - 本地包：`dist/cofleet-test-0.1.0.lpk`，约 2.1 MB；SHA-256：`b05d080b0275f4cf6b01d0d11c42dc421ea48582f35b0799f055f786a0b32d26`。
 - 容器：`cloudlazycatappcofleettest-app-1`，应用健康状态正常。
@@ -51,8 +55,8 @@
 
 ```sh
 # 本机既有 CLI 所在的 Node 环境
-mise exec node@26.8.2 -- lzc-cli project build -o dist/cofleet-test-0.1.0.lpk
-mise exec node@26.8.2 -- lzc-cli app install dist/cofleet-test-0.1.0.lpk
+mise exec node@26.8.2 -- lzc-cli project build -o dist/xyz.mxue.lzc.app.cofleet-0.1.0.lpk
+mise exec node@26.8.2 -- lzc-cli app install dist/xyz.mxue.lzc.app.cofleet-0.1.0.lpk
 
 # 使用本机已登录的懒猫客户端；创建临时测试 Agent，结束后自动清理
 python3 scripts/verify-lazycat.py \
@@ -70,3 +74,5 @@ python3 scripts/verify-lazycat.py \
 - 外部网络/中继条件、设备服务网关、容器执行和应用部署等后续功能。
 
 管理端节点表仍为内存状态，重启后由在线 Agent 重新上报；本轮成功不代表已实现任务执行、持久状态库或生产设备配对授权。
+
+应用包 ID 改变会创建独立应用，不是对历史测试实例原地升级。安装新包前应明确旧实例与 `cofleet-test` 子域名的处理方式；本文不执行卸载或迁移。

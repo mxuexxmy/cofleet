@@ -110,3 +110,5 @@ cargo run --bin cofleetctl -- --data-dir .cofleet-dev/lazycat init \
 开发模式可通过 `POST /api/v1/devices/{device_id}/refresh`（同一 Bearer 测试凭据）要求 Agent 立即上报，返回 202 与 `request_id`。节点列表中的 `last_report_id` 在 Agent 应答后更新；202 只代表已入队，不代表已完成。离线设备返回 409，其他账号的设备返回 404。本版不提供任意命令执行接口。
 
 `cargo test --locked` 另外验证模拟 Ingress 的账号隔离、伪造 Header 拒绝、同设备重连替换、请求 ID 应答及非法协议/超大帧断开。模拟身份不等同真实懒猫认证测试。
+
+当前 LPK 包 ID 为 `xyz.mxue.lzc.app.cofleet`，构建配置使用 `assets/cofleet-icon-256.png`。网页通过管理端内嵌的 `/favicon.ico` 提供多尺寸透明图标。包 ID 与子域名分别配置，当前子域名仍为 `cofleet-test`。

@@ -2,7 +2,7 @@ use anyhow::Result;
 use axum::{
     Json, Router,
     extract::{ConnectInfo, DefaultBodyLimit, Path, State, WebSocketUpgrade},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
@@ -128,6 +128,18 @@ async fn main() -> Result<()> {
     let mode = app.auth.mode;
     let routes = Router::new()
         .route("/", get(|| async { Html(include_str!("../manager.html")) }))
+        .route(
+            "/favicon.ico",
+            get(|| async {
+                (
+                    [
+                        (header::CONTENT_TYPE, "image/vnd.microsoft.icon"),
+                        (header::CACHE_CONTROL, "public, max-age=86400"),
+                    ],
+                    include_bytes!("../../assets/favicon.ico").as_slice(),
+                )
+            }),
+        )
         .route("/healthz", get(|| async { "ok" }))
         .route(
             "/api/v1/auth-mode",
