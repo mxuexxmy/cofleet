@@ -201,6 +201,13 @@ async fn route(
         return Err(StatusCode::FORBIDDEN);
     }
     if host == *base {
+        if request.uri().path() == "/" {
+            return Ok((
+                [(header::CACHE_CONTROL, "no-store")],
+                axum::response::Html(include_str!("demo.html")),
+            )
+                .into_response());
+        }
         if request.uri().path() == "/api/m0/node" && app.key(&request) {
             let (mut parts, _) = request.into_parts();
             let ws = WebSocketUpgrade::from_request_parts(&mut parts, &())

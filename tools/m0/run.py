@@ -9,8 +9,11 @@ import json
 import os
 import pathlib
 import secrets
+import shlex
 import shutil
+import signal
 import subprocess
+import time
 import urllib.parse
 import urllib.request
 import uuid
@@ -202,7 +205,7 @@ def prepare():
                 timeout=10,
             )
         )["user"]
-    package = "xyz.mxue.lzc.app.cofleet.m0." + run
+    package = "xyz.mxue.lzc.app.cofleet.m0.p" + run
     domain = "cofleetm0" + run + "." + box["boxDomain"]
     settings = {
         "domain": domain,
@@ -463,7 +466,61 @@ async def verify():
                 node.wait(timeout=10)
 
 
+def stop_demo():
+    saved = state()
+    pid = saved.get("demo_pid")
+    if not pid:
+        return
+    proc = pathlib.Path("/proc") / str(pid) / "cmdline"
+    script = str(pathlib.Path(saved["directory"]) / "demo-node.sh")
+    if proc.exists() and script.encode() in proc.read_bytes().split(b"\0"):
+        os.killpg(pid, signal.SIGTERM)
+        for _ in range(30):
+            if not proc.exists():
+                break
+            time.sleep(0.1)
+    saved.pop("demo_pid", None)
+    (BASE / "current.json").write_text(json.dumps(saved))
+    print("Demo connector stopped.")
+
+
+def start_demo():
+    saved = state()
+    assert not saved.get("cleaned"), "Prepare and deploy the demo first"
+    target_cookie(saved)
+    stop_demo()
+    saved = state()
+    directory = pathlib.Path(saved["directory"])
+    script = directory / "demo-node.sh"
+    args = [
+        str(BIN),
+        "node",
+        "--config",
+        str(directory / "content/config.json"),
+        "--node-config",
+        str(ROOT / ".local/runtime/node"),
+    ]
+    script.write_text(
+        "#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile :; do\n  "
+        + shlex.join(args)
+        + "\n  sleep 3\ndone\n"
+    )
+    os.chmod(script, 0o700)
+    with (directory / "demo-node.log").open("a") as log:
+        process = subprocess.Popen(
+            ["/bin/sh", str(script)],
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    saved["demo_pid"] = process.pid
+    (BASE / "current.json").write_text(json.dumps(saved))
+    print("Demo connector running with retry; private PID and log recorded.")
+
+
 def cleanup():
+    stop_demo()
     s = state()
     cookie = target_cookie(s)
     assert s["package"].startswith("xyz.mxue.lzc.app.cofleet.m0.") and s[
@@ -528,9 +585,12 @@ def cleanup():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["prepare", "deploy", "verify", "cleanup"])
+    parser.add_argument(
+        "action",
+        choices=["prepare", "deploy", "verify", "cleanup", "start-demo", "stop-demo"],
+    )
     args = parser.parse_args()
     if args.action == "verify":
         asyncio.run(verify())
     else:
-        globals()[args.action]()
+        globals()[args.action.replace("-", "_")]()
