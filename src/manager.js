@@ -6,6 +6,7 @@ const dockerViews = new Map();
 const workspaceViews = new Map();
 const pipelineViews = new Map();
 let dockerEpoch = 0;
+let pendingSchedule = null, submittingSchedule = false;
 const osNames = { linux: 'Linux', windows: 'Windows', macos: 'macOS' };
 
 function el(tag, className, text) {
@@ -357,21 +358,47 @@ function render() {
   renderDetails(visible.find(d => d.device_id === selectedId));
 }
 
+function scheduleReason(reason) {
+  const messages = {
+    'matching node selected': '已选择匹配节点，等待提交具体任务',
+    'assigned node is online': '已分配节点在线，保持当前计划',
+    'stateful workload lost contact with its node; waiting to avoid a second writer': '有状态负载与原节点失联；等待恢复，避免出现第二个写入者',
+    'previous node is offline; retry on a matching node': '原节点离线，计划在匹配节点重试',
+    'previous node is offline; rebuild stateless service on a matching node': '原节点离线，计划在匹配节点重建无状态服务',
+    'no nodes are registered': '尚无已注册节点',
+    'node is offline': '节点离线',
+    'node paused new tasks': '节点已暂停接收新任务',
+    'build/deploy executor is not enabled': '尚未启用构建与发布执行器',
+    'resource report is unavailable': '尚未收到资源报告',
+    'insufficient execution-environment CPU capacity': '执行环境 CPU 额度不足',
+    'insufficient execution-environment memory capacity': '执行环境内存额度不足',
+    'insufficient physical CPU capacity': '物理主机剩余 CPU 额度不足',
+    'insufficient physical memory capacity': '物理主机剩余内存额度不足',
+    'GPU is required but not reported': '负载需要 GPU，节点尚未声明',
+    'insufficient GPU memory': 'GPU 显存不足',
+    'insufficient uncommitted physical GPU memory': '物理主机剩余 GPU 显存额度不足'
+  };
+  if (messages[reason]) return messages[reason];
+  if (reason.startsWith('no matching node: ')) return '没有匹配节点：' + reason.slice(18).split('; ').map(scheduleReason).join('；');
+  const data = /^data location (.+) is not present$/.exec(reason);
+  return data ? '节点不含数据位置 ' + data[1] : reason;
+}
+
 function renderWorkloads() {
   const area = $('#workloads'); area.replaceChildren();
-  $('#schedule-submit').disabled = !fresh || (!token && !platformLogin);
+  $('#schedule-submit').disabled = submittingSchedule || !fresh || (!token && !platformLogin);
   if (!workloads.length) { area.append(el('p', '', fresh ? '尚无调度计划。' : '连接后可创建调度计划。')); return; }
-  const actions = { start: '开始', keep: '保持', retry: '重试', rebuild: '重建', wait: '等待' };
+  const actions = { start: '已分配', keep: '保持分配', retry: '计划重试', rebuild: '计划重建', wait: '等待' };
   const kinds = { batch: '批任务', stateless_service: '无状态服务', stateful_service: '有状态服务' };
   for (const workload of workloads) {
     const row = el('div', 'workload-row'), summary = el('div');
     const device = devices.find(value => value.device_id === workload.device_id);
-    summary.append(el('strong', '', (kinds[workload.kind] || workload.kind) + ' · ' + (actions[workload.action] || workload.action)), el('div', '', workload.reason), el('small', '', '节点：' + (device?.name || workload.device_id || '未分配') + ' · 尝试 ' + workload.attempt), el('code', '', workload.workload_id));
+    summary.append(el('strong', '', (kinds[workload.kind] || workload.kind) + ' · ' + (actions[workload.action] || workload.action)), el('div', '', scheduleReason(workload.reason)), el('small', '', '节点：' + (device?.name || workload.device_id || '未分配') + ' · 尝试 ' + workload.attempt), el('code', '', workload.workload_id));
     const remove = el('button', 'quiet', '释放'); remove.type = 'button'; remove.onclick = () => removeWorkload(workload.workload_id);
     row.append(summary, remove);
     const failures = (workload.candidates || []).filter(candidate => !candidate.eligible).map(candidate => {
       const node = devices.find(value => value.device_id === candidate.device_id);
-      return (node?.name || candidate.device_id) + '：' + candidate.reasons.join('、');
+      return (node?.name || candidate.device_id) + '：' + candidate.reasons.map(scheduleReason).join('、');
     });
     if (failures.length) row.append(el('div', 'candidate-reasons', failures.join('；')));
     area.append(row);
@@ -390,16 +417,30 @@ async function removeWorkload(id) {
 
 $('#schedule-form').onsubmit = async event => {
   event.preventDefault();
+  if (submittingSchedule) return;
+  const epoch = dockerEpoch;
   const kind = $('#schedule-kind').value, data = $('#schedule-data').value.trim();
   if (kind === 'stateful_service' && !data) { setNotice('有状态负载必须填写数据位置，避免错误复制。', true); return; }
-  $('#schedule-submit').disabled = true;
-  const request = { workload_id: crypto.randomUUID(), kind, requirements: { cpu_threads: Number($('#schedule-cpu').value), memory_mib: Number($('#schedule-memory').value), gpu_memory_mib: Number($('#schedule-gpu').value || 0), data_location: data || null, prefer_always_on: $('#schedule-always').checked } };
+  const input = { kind, requirements: { cpu_threads: Number($('#schedule-cpu').value), memory_mib: Number($('#schedule-memory').value), gpu_memory_mib: Number($('#schedule-gpu').value || 0), data_location: data || null, prefer_always_on: $('#schedule-always').checked } };
+  if (pendingSchedule && JSON.stringify(input) !== JSON.stringify({ kind: pendingSchedule.kind, requirements: pendingSchedule.requirements })) {
+    setNotice('上次提交结果待确认，请先刷新计划列表，或用原参数重试。', true); return;
+  }
+  const request = pendingSchedule || { workload_id: crypto.randomUUID(), ...input };
+  pendingSchedule = request; submittingSchedule = true; $('#schedule-submit').disabled = true;
+  const requestController = new AbortController();
+  const requestTimeout = setTimeout(() => requestController.abort(), 15000);
   try {
-    const response = await fetch('api/v1/workloads', { method: 'POST', headers: requestHeaders(true), body: JSON.stringify(request), redirect: 'error' });
-    if (!response.ok) throw new Error(await response.text() || '调度请求失败（' + response.status + '）');
-    const placement = await response.json(); workloads = workloads.filter(value => value.workload_id !== placement.workload_id); workloads.push(placement); setNotice(placement.reason); render();
-  } catch (error) { setNotice(error.message, true); }
-  finally { $('#schedule-submit').disabled = !fresh; }
+    const response = await fetch('api/v1/workloads', { method: 'POST', headers: requestHeaders(true), body: JSON.stringify(request), signal: requestController.signal, redirect: 'error' });
+    if (epoch !== dockerEpoch) return;
+    if (!response.ok) {
+      if (response.status >= 400 && response.status < 500) pendingSchedule = null;
+      throw new Error(await response.text() || '调度请求失败（' + response.status + '）');
+    }
+    const placement = await response.json();
+    if (epoch !== dockerEpoch) return;
+    pendingSchedule = null; workloads = workloads.filter(value => value.workload_id !== placement.workload_id); workloads.push(placement); setNotice(scheduleReason(placement.reason)); render();
+  } catch (error) { if (epoch === dockerEpoch) setNotice(error.message + (pendingSchedule ? ' 结果待确认，再次提交将复用同一请求 ID。' : ''), true); }
+  finally { clearTimeout(requestTimeout); if (epoch === dockerEpoch) { submittingSchedule = false; $('#schedule-submit').disabled = !fresh; } }
 };
 async function refresh() {
   if (!token && !platformLogin) return;
@@ -420,7 +461,9 @@ async function refresh() {
     const workloadResponse = await fetch('api/v1/workloads', { headers: platformLogin ? {} : { Authorization: 'Bearer ' + token }, cache: 'no-store', signal: activeController.signal, redirect: 'error' });
     if (!workloadResponse.ok) throw new Error('无法读取调度状态（' + workloadResponse.status + '）。');
     const workloadData = await workloadResponse.json();
-    devices = data; workloads = Array.isArray(workloadData) ? workloadData : []; fresh = true; lastRefresh = Date.now();
+    devices = data; workloads = Array.isArray(workloadData) ? workloadData : [];
+    if (!submittingSchedule && pendingSchedule && workloads.some(value => value.workload_id === pendingSchedule.workload_id)) pendingSchedule = null;
+    fresh = true; lastRefresh = Date.now();
     $('#login-panel').hidden = true;
     setConnection('已连接', 'online');
     setNotice('最近更新 ' + new Date(lastRefresh).toLocaleTimeString('zh-CN') + '，每 5 秒自动刷新。');
@@ -438,14 +481,14 @@ async function refresh() {
   }
 }
 $('#login').onsubmit = event => {
-  dockerEpoch++; dockerViews.clear(); workspaceViews.clear(); pipelineViews.clear();
+  dockerEpoch++; pendingSchedule = null; submittingSchedule = false; dockerViews.clear(); workspaceViews.clear(); pipelineViews.clear();
   event.preventDefault(); token = $('#token').value; $('#token').value = '';
   fetch('api/v1/workspace-session', { method: 'POST', headers: { Authorization: 'Bearer ' + token, 'X-CoFleet-Request': '1' } }).catch(() => {});
   devices = []; workloads = []; selectedId = null; fresh = false; lastRefresh = null;
   $('#logout').hidden = false; render(); refresh();
 };
 $('#logout').onclick = () => {
-  dockerEpoch++; dockerViews.clear(); workspaceViews.clear(); pipelineViews.clear();
+  dockerEpoch++; pendingSchedule = null; submittingSchedule = false; dockerViews.clear(); workspaceViews.clear(); pipelineViews.clear();
   if (token) fetch('api/v1/workspace-session', { method: 'DELETE', headers: { Authorization: 'Bearer ' + token, 'X-CoFleet-Request': '1' } }).catch(() => {});
   generation++; controller?.abort(); token = ''; devices = []; workloads = []; fresh = false; selectedId = null; lastRefresh = null;
   $('#login-panel').hidden = false; $('#logout').hidden = true; $('#refresh').disabled = true;

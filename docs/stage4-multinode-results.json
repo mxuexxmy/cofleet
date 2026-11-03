@@ -1,0 +1,87 @@
+{
+  "date": "2026-11-04",
+  "version": "0.6.0",
+  "native_scheduler": {
+    "version": "0.6.0",
+    "checks": {
+      "two_real_agents_report_version_capabilities_and_same_physical_host": true,
+      "scheduler_requires_authentication": true,
+      "shared_host_commitments_prevent_double_counting_and_release_frees_capacity": true,
+      "request_retry_is_idempotent_and_conflicting_requirements_rejected": true,
+      "gpu_and_data_mismatch_return_explicit_candidate_reasons": true,
+      "batch_disconnect_policy_retry": true,
+      "stateless_service_disconnect_policy_rebuild": true,
+      "stateful_service_disconnect_policy_wait": true,
+      "paused_nodes_reject_new_placement": true
+    },
+    "scope": "two native Agent processes on one real physical host; no second machine or Docker workloads simulated"
+  },
+  "real_platform": {
+    "version": "0.6.0",
+    "checks": {
+      "microserver_and_native_agent_are_0_6_0": true,
+      "native_and_windows_nodes_report_through_real_platform_auth": true,
+      "real_node_placement_and_idempotent_retry": true,
+      "unready_windows_executor_and_unsatisfied_requirements_are_explicit": true,
+      "workspace_project_and_exact_deployed_application_survive_upgrade": true,
+      "only_verifier_plans_released_after_test": true
+    },
+    "nodes": [
+      {
+        "os": "linux",
+        "version": "0.6.0",
+        "online": true,
+        "build_deploy_enabled": true,
+        "workspace_enabled": true
+      },
+      {
+        "os": "windows",
+        "version": "0.6.0",
+        "online": true,
+        "build_deploy_enabled": false,
+        "workspace_enabled": false
+      }
+    ],
+    "scope": "real native and Windows registration; plan-only validation; Windows executor is not enabled, no Windows container/SCM tests performed"
+  },
+  "pipeline_regression": {
+    "checks": {
+      "frozen_source_digest_private_archive_logs_and_build_deduplication": true,
+      "immutable_image_deployment_and_authenticated_application_proxy": true,
+      "application_origin_and_authentication_checks": true,
+      "health_gated_update_previous_release_retained_and_stale_update_rejected": true,
+      "data_migration_release_refused_without_touching_active_application": true,
+      "unhealthy_candidate_never_replaces_running_release": true,
+      "rollback_uses_preserved_immutable_image": true,
+      "symlink_source_rejected_without_disrupting_application": true,
+      "failed_build_preserves_logs_and_current_release": true,
+      "agent_restart_preserves_application_versions_and_request_journal": true,
+      "explicit_stop_is_not_undone_by_replayed_release_operation": true
+    },
+    "scope": "native Docker, isolated node/manager, applications accessed through reverse data tunnels"
+  },
+  "ui_handler_tests": {
+    "lost_response_retry_keeps_request_id": true,
+    "changed_uncertain_input_cannot_duplicate_plan": true,
+    "concurrent_submit_blocked": true,
+    "old_login_response_ignored": true,
+    "chinese_rejection_reasons": true
+  },
+  "rust_tests": 24,
+  "not_verified": [
+    "Windows SCM restart/logout/reboot",
+    "Windows Docker Desktop workspace/build/deploy",
+    "independent external-network client",
+    "second physical executor failover"
+  ],
+  "browser": {
+    "two_real_nodes_online": true,
+    "plan_creation_and_release": true,
+    "chinese_assignment_and_windows_executor_reason": true,
+    "planning_only_notice": true
+  },
+  "deployment": {
+    "manager_packaged_and_deployed_sha256": "315ae28eb4a00e6f2b77e29e21b1b47e8b5c9bdced05044e18c42cc79f63cf3f",
+    "running_native_agent_matches_latest_build": true
+  }
+}
