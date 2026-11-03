@@ -76,7 +76,10 @@ cargo clippy --locked --all-targets --features tray -- -D warnings
 cargo test --locked
 cargo build --locked --bins
 python3 tests/smoke.py
+node tests/scheduler_ui.mjs
 ```
+
+管理端浏览器回归使用 Playwright：安装可用的 `playwright` Node 模块后运行 `node tests/manager_ui.mjs`（支持通过 `NODE_PATH` 指定模块目录、`CHROMIUM_PATH` 指定浏览器）。测试启动独立的本地 HTTP 数据夹具，不连接真实节点；覆盖导航、定时刷新输入保持、日志、确认与重试以及移动端，截图输出到 `.local/ui-preview/redesign/`。
 
 进程级测试覆盖错误凭据拒绝、节点上报、重复启动、暂停状态持久化、管理端中断恢复、离线本地控制与凭据不出现在状态中；Unix 额外检查权限、超大消息及异常退出后 socket 恢复。CI 已配置三平台检查，但配置 CI 不等于三平台已运行通过。
 

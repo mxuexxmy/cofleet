@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>聚机 · 设备管理</title>
+<title>聚机 · 协同工作台</title>
 <link rel="icon" href="favicon.ico" type="image/vnd.microsoft.icon">
 <link rel="stylesheet" href="manager.css">
 <script src="manager.js" defer></script>
@@ -10,21 +10,24 @@
 <body>
 <header class="masthead">
   <a class="brand" href="./"><img src="app-icon.png" width="44" height="44" alt=""><span>聚机<small>CoFleet</small></span></a>
-  <span class="page-name">设备管理</span>
+  <span class="page-name">协同工作台</span>
   <div class="connection"><span id="connection-dot" class="dot"></span><span id="connection-label">等待连接</span></div>
+  <span id="updated-at" class="updated-at">每 5 秒自动更新</span>
+  <button id="refresh" class="secondary" disabled>刷新</button><button id="logout" class="quiet" hidden>断开连接</button>
 </header>
 <main>
   <section id="login-panel" class="login-panel" aria-labelledby="login-title">
     <div><h1 id="login-title">连接你的设备</h1><p>输入开发环境的访问凭据，查看已接入的电脑。</p></div>
     <form id="login"><label for="token">访问凭据</label><div class="input-group"><input id="token" type="password" required autocomplete="off"><button type="submit">连接</button></div></form>
   </section>
-  <div class="toolbar">
-    <div><h1>你的电脑</h1><p id="summary">连接后查看设备和资源。</p></div>
-    <div class="toolbar-actions"><button id="refresh" class="secondary" disabled>刷新</button><button id="logout" class="quiet" hidden>断开连接</button></div>
-  </div>
+  <nav class="primary-nav" aria-label="工作台导航">
+    <button id="nav-computers" type="button" aria-current="page">电脑与开发空间</button>
+    <button id="nav-scheduler" type="button">调度计划</button>
+  </nav>
   <p id="notice" class="notice" role="status" aria-live="polite">凭据仅保存在当前页面内存。</p>
+  <section id="scheduler-page" hidden>
   <section class="scheduler-panel" aria-labelledby="scheduler-title">
-    <div class="section-head"><div><h2 id="scheduler-title">多节点调度</h2><p>按物理主机容量、数据位置、GPU 与在线偏好选择执行节点。</p><p>当前仅创建调度计划，不会自动启动构建或容器；管理端重启后需重新创建。</p></div></div>
+    <div class="section-head"><div><h1 id="scheduler-title">调度计划</h1><p>按物理主机容量、数据位置、GPU 与在线偏好选择执行节点。</p><p>仅生成计划，不自动执行构建或容器。管理端重启后需重新创建。</p></div></div>
     <form id="schedule-form" class="schedule-form">
       <label>负载类型<select id="schedule-kind"><option value="batch">批任务</option><option value="stateless_service">无状态服务</option><option value="stateful_service">有状态服务</option></select></label>
       <label>CPU 线程<input id="schedule-cpu" type="number" min="1" max="65536" value="1" required></label>
@@ -34,8 +37,12 @@
       <label class="filter"><input id="schedule-always" type="checkbox">优先长期在线节点</label>
       <button id="schedule-submit" type="submit" disabled>创建计划</button>
     </form>
+    <p id="schedule-notice" class="notice" role="status"></p>
     <div id="workloads" class="workload-list"><p>连接后可创建调度计划。</p></div>
   </section>
+  </section>
+  <section id="computers-page">
+  <div class="toolbar"><div><h1>电脑与开发空间</h1><p id="summary">连接后查看设备和资源。</p></div><span class="section-note">选择电脑，继续你的工作</span></div>
   <div class="workspace">
     <section class="fleet" aria-label="设备列表">
       <label class="search-label" for="search">查找设备</label><input id="search" type="search" placeholder="名称、系统或设备 ID" autocomplete="off">
@@ -45,6 +52,7 @@
     </section>
     <section id="details" class="details" aria-label="设备详情"><div class="detail-empty"><h2>选择一台电脑</h2><p>查看实时资源、连接状态与规划额度。</p></div></section>
   </div>
+  </section>
   <footer>每 5 秒更新 · CPU、内存与磁盘由电脑本机采集</footer>
 </main>
 </body></html>

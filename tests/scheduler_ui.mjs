@@ -31,7 +31,7 @@ send = async (_, options) => {
   return { ok: true, json: async () => ({ workload_id: request.workload_id, reason: 'matching node selected' }) };
 };
 await submit();
-assert.match(field('#notice').textContent, /复用同一请求 ID/);
+assert.match(field('#schedule-notice').textContent, /复用同一请求 ID/);
 field('#schedule-memory').value = '1024';
 await submit();
 assert.equal(calls.length, 1, 'changing uncertain input must not create a second plan');
@@ -40,7 +40,7 @@ await submit();
 assert.equal(calls.length, 2);
 assert.equal(calls[0].workload_id, calls[1].workload_id);
 assert.equal(accepted.size, 1, 'lost-response retry must have only one server plan');
-assert.match(field('#notice').textContent, /已选择匹配节点/);
+assert.match(field('#schedule-notice').textContent, /已选择匹配节点/);
 console.log('PASS lost response retry keeps ID; changed input rejected; one accepted plan');
 let resolve;
 send = (_, options) => {
