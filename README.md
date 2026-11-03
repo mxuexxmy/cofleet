@@ -10,9 +10,11 @@ CoFleet 是基于懒猫微服网络的个人开发与应用运行平台构想：
 
 ## 界面示例
 
-![CoFleet 0.2.0 设备管理界面](docs/screenshots/dashboard-0.2.0.png)
+![CoFleet 0.6.1 电脑与开发空间工作台](docs/screenshots/manager-overview-0.6.1.png)
 
-0.2.0 设备管理示例，展示资源监测、设备状态和预留规划。图中数据为示例节点的一次快照。
+0.6.1 管理端以电脑与开发空间为默认入口：左侧查找设备，右侧查看资源或切换开发空间、构建发布和容器页签；就绪设备可直接进入开发空间。调度计划通过独立导航访问。
+
+图中使用浏览器回归测试的模拟设备数据，不是真实设备或性能测量结果。更多桌面与手机截图、操作说明见 [管理端界面与交互](docs/manager-ui.md)。
 
 ## 目标体验
 
@@ -35,6 +37,7 @@ CoFleet 是基于懒猫微服网络的个人开发与应用运行平台构想：
 - [参考项目与研究依据](docs/references.md)
 - [技术选型与原型验证](docs/technology.md)
 - [开发与运行原型](docs/development.md)
+- [管理端界面与交互](docs/manager-ui.md)
 - [持久开发空间与阶段 2 验证](docs/stage2-workspace.md)
 - [构建到部署与阶段 3 验证](docs/stage3-pipeline.md)
 - [多节点协作与 Windows Agent](docs/stage4-multinode.md)
