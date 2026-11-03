@@ -23,6 +23,19 @@
     <div class="toolbar-actions"><button id="refresh" class="secondary" disabled>刷新</button><button id="logout" class="quiet" hidden>断开连接</button></div>
   </div>
   <p id="notice" class="notice" role="status" aria-live="polite">凭据仅保存在当前页面内存。</p>
+  <section class="scheduler-panel" aria-labelledby="scheduler-title">
+    <div class="section-head"><div><h2 id="scheduler-title">多节点调度</h2><p>按物理主机容量、数据位置、GPU 与在线偏好选择执行节点。</p></div></div>
+    <form id="schedule-form" class="schedule-form">
+      <label>负载类型<select id="schedule-kind"><option value="batch">批任务</option><option value="stateless_service">无状态服务</option><option value="stateful_service">有状态服务</option></select></label>
+      <label>CPU 线程<input id="schedule-cpu" type="number" min="1" max="65536" value="1" required></label>
+      <label>内存 MiB<input id="schedule-memory" type="number" min="1" value="512" required></label>
+      <label>GPU 显存 MiB<input id="schedule-gpu" type="number" min="0" value="0"></label>
+      <label>数据位置<input id="schedule-data" maxlength="128" placeholder="例如 nas-a"></label>
+      <label class="filter"><input id="schedule-always" type="checkbox">优先长期在线节点</label>
+      <button id="schedule-submit" type="submit" disabled>创建调度</button>
+    </form>
+    <div id="workloads" class="workload-list"><p>连接后可创建调度计划。</p></div>
+  </section>
   <div class="workspace">
     <section class="fleet" aria-label="设备列表">
       <label class="search-label" for="search">查找设备</label><input id="search" type="search" placeholder="名称、系统或设备 ID" autocomplete="off">

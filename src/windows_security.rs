@@ -67,10 +67,12 @@ impl Descriptor {
     pub fn current_user(inherit: bool) -> Result<Self> {
         let sid = current_sid()?;
         let flags = if inherit { "OICI" } else { "" };
-        let sddl: Vec<u16> = format!("D:P(A;{flags};GA;;;{sid})(A;{flags};GA;;;SY)")
-            .encode_utf16()
-            .chain(Some(0))
-            .collect();
+        // Administrators retain recovery access when the Agent runs as LocalSystem.
+        let sddl: Vec<u16> =
+            format!("D:P(A;{flags};GA;;;{sid})(A;{flags};GA;;;SY)(A;{flags};GA;;;BA)")
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
         let mut pointer = std::ptr::null_mut();
         anyhow::ensure!(
             unsafe {

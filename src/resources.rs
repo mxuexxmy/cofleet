@@ -48,6 +48,63 @@ pub struct PlanningCapacity {
     pub cpu_threads: u32,
     pub memory_bytes: u64,
 }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum AvailabilityPreference {
+    #[default]
+    Opportunistic,
+    AlwaysOn,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GpuCapability {
+    pub name: String,
+    pub memory_mib: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NodeCapabilities {
+    /// Multiple execution environments on one computer must use the same ID.
+    pub physical_host_id: Option<uuid::Uuid>,
+    pub gpu: Option<GpuCapability>,
+    pub data_locations: Vec<String>,
+    pub availability: AvailabilityPreference,
+}
+impl NodeCapabilities {
+    pub fn physical_host(&self, device: uuid::Uuid) -> uuid::Uuid {
+        self.physical_host_id.unwrap_or(device)
+    }
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if let Some(gpu) = &self.gpu {
+            anyhow::ensure!(
+                !gpu.name.trim().is_empty() && gpu.name.len() <= 128,
+                "GPU name must be 1..128 bytes"
+            );
+        }
+        anyhow::ensure!(self.data_locations.len() <= 64, "too many data locations");
+        for location in &self.data_locations {
+            anyhow::ensure!(
+                !location.trim().is_empty()
+                    && location.len() <= 128
+                    && location
+                        .bytes()
+                        .all(|v| v.is_ascii_alphanumeric() || b"._-:/".contains(&v)),
+                "invalid data location label"
+            );
+        }
+        let mut unique = self.data_locations.clone();
+        unique.sort();
+        unique.dedup();
+        anyhow::ensure!(
+            unique.len() == self.data_locations.len(),
+            "duplicate data location label"
+        );
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StorageSnapshot {
     pub total_bytes: u64,

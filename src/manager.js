@@ -1,6 +1,6 @@
 'use strict';
 const $ = selector => document.querySelector(selector);
-let token = '', platformLogin = false, devices = [], selectedId = null, fresh = false;
+let token = '', platformLogin = false, devices = [], workloads = [], selectedId = null, fresh = false;
 let generation = 0, controller = null, lastRefresh = null;
 const dockerViews = new Map();
 const workspaceViews = new Map();
@@ -116,6 +116,11 @@ function renderDetails(device) {
   pair(info, '操作系统', resources?.os_version || (osNames[device.os] || device.os));
   pair(info, '系统运行时间', resources ? duration(resources.uptime_secs) : '—');
   pair(info, '设备 ID', device.device_id);
+  const capabilities = device.capabilities || {};
+  pair(info, '物理主机 ID', capabilities.physical_host_id || device.device_id);
+  pair(info, 'GPU', capabilities.gpu ? capabilities.gpu.name + ' / ' + capabilities.gpu.memory_mib + ' MiB' : '未声明');
+  pair(info, '数据位置', capabilities.data_locations?.join('、') || '未声明');
+  pair(info, '在线偏好', capabilities.availability === 'always_on' ? '长期在线' : '按需在线');
   pair(info, '资源采集时间', resources ? new Date(resources.sampled_at_unix * 1000).toLocaleString('zh-CN') : '—');
   area.append(info);
   renderDocker(area, device);
@@ -126,7 +131,7 @@ function renderDetails(device) {
 function renderDocker(area, device) {
   const section = el('section', 'docker-section');
   const head = el('div', 'section-head');
-  head.append(el('h3', '', 'Docker 容器'), el('span', 'section-note', '原生 Linux · 固定测试负载'));
+  head.append(el('h3', '', 'Docker 容器'), el('span', 'section-note', 'Linux 容器 · 固定测试负载'));
   section.append(head); area.append(section);
   const docker = device.docker;
   if (!docker) {
@@ -348,8 +353,54 @@ function render() {
   $('#empty').textContent = devices.length ? '没有符合当前筛选条件的设备。' : '设备上线后，会显示在这里。请在电脑上启动 Agent。';
   const online = devices.filter(d => d.online).length;
   $('#summary').textContent = devices.length ? devices.length + ' 台设备，' + (fresh ? online + ' 台在线' : '连接状态待确认') : '等待电脑接入。';
+  renderWorkloads();
   renderDetails(visible.find(d => d.device_id === selectedId));
 }
+
+function renderWorkloads() {
+  const area = $('#workloads'); area.replaceChildren();
+  $('#schedule-submit').disabled = !fresh || (!token && !platformLogin);
+  if (!workloads.length) { area.append(el('p', '', fresh ? '尚无调度计划。' : '连接后可创建调度计划。')); return; }
+  const actions = { start: '开始', keep: '保持', retry: '重试', rebuild: '重建', wait: '等待' };
+  const kinds = { batch: '批任务', stateless_service: '无状态服务', stateful_service: '有状态服务' };
+  for (const workload of workloads) {
+    const row = el('div', 'workload-row'), summary = el('div');
+    const device = devices.find(value => value.device_id === workload.device_id);
+    summary.append(el('strong', '', (kinds[workload.kind] || workload.kind) + ' · ' + (actions[workload.action] || workload.action)), el('div', '', workload.reason), el('small', '', '节点：' + (device?.name || workload.device_id || '未分配') + ' · 尝试 ' + workload.attempt), el('code', '', workload.workload_id));
+    const remove = el('button', 'quiet', '释放'); remove.type = 'button'; remove.onclick = () => removeWorkload(workload.workload_id);
+    row.append(summary, remove);
+    const failures = (workload.candidates || []).filter(candidate => !candidate.eligible).map(candidate => {
+      const node = devices.find(value => value.device_id === candidate.device_id);
+      return (node?.name || candidate.device_id) + '：' + candidate.reasons.join('、');
+    });
+    if (failures.length) row.append(el('div', 'candidate-reasons', failures.join('；')));
+    area.append(row);
+  }
+}
+
+function requestHeaders(json = false) {
+  return { ...(json ? { 'Content-Type': 'application/json' } : {}), 'X-CoFleet-Request': '1', ...(platformLogin ? {} : { Authorization: 'Bearer ' + token }) };
+}
+
+async function removeWorkload(id) {
+  const response = await fetch('api/v1/workloads/' + id, { method: 'DELETE', headers: requestHeaders(), redirect: 'error' });
+  if (!response.ok) { setNotice('释放调度计划失败（' + response.status + '）。', true); return; }
+  workloads = workloads.filter(value => value.workload_id !== id); render();
+}
+
+$('#schedule-form').onsubmit = async event => {
+  event.preventDefault();
+  const kind = $('#schedule-kind').value, data = $('#schedule-data').value.trim();
+  if (kind === 'stateful_service' && !data) { setNotice('有状态负载必须填写数据位置，避免错误复制。', true); return; }
+  $('#schedule-submit').disabled = true;
+  const request = { workload_id: crypto.randomUUID(), kind, requirements: { cpu_threads: Number($('#schedule-cpu').value), memory_mib: Number($('#schedule-memory').value), gpu_memory_mib: Number($('#schedule-gpu').value || 0), data_location: data || null, prefer_always_on: $('#schedule-always').checked } };
+  try {
+    const response = await fetch('api/v1/workloads', { method: 'POST', headers: requestHeaders(true), body: JSON.stringify(request), redirect: 'error' });
+    if (!response.ok) throw new Error(await response.text() || '调度请求失败（' + response.status + '）');
+    const placement = await response.json(); workloads = workloads.filter(value => value.workload_id !== placement.workload_id); workloads.push(placement); setNotice(placement.reason); render();
+  } catch (error) { setNotice(error.message, true); }
+  finally { $('#schedule-submit').disabled = !fresh; }
+};
 async function refresh() {
   if (!token && !platformLogin) return;
   const current = ++generation;
@@ -366,7 +417,10 @@ async function refresh() {
     const data = await response.json();
     if (current !== generation) return;
     if (!Array.isArray(data)) throw new Error('管理中心返回了无法识别的数据。');
-    devices = data; fresh = true; lastRefresh = Date.now();
+    const workloadResponse = await fetch('api/v1/workloads', { headers: platformLogin ? {} : { Authorization: 'Bearer ' + token }, cache: 'no-store', signal: activeController.signal, redirect: 'error' });
+    if (!workloadResponse.ok) throw new Error('无法读取调度状态（' + workloadResponse.status + '）。');
+    const workloadData = await workloadResponse.json();
+    devices = data; workloads = Array.isArray(workloadData) ? workloadData : []; fresh = true; lastRefresh = Date.now();
     $('#login-panel').hidden = true;
     setConnection('已连接', 'online');
     setNotice('最近更新 ' + new Date(lastRefresh).toLocaleTimeString('zh-CN') + '，每 5 秒自动刷新。');
@@ -387,13 +441,13 @@ $('#login').onsubmit = event => {
   dockerEpoch++; dockerViews.clear(); workspaceViews.clear(); pipelineViews.clear();
   event.preventDefault(); token = $('#token').value; $('#token').value = '';
   fetch('api/v1/workspace-session', { method: 'POST', headers: { Authorization: 'Bearer ' + token, 'X-CoFleet-Request': '1' } }).catch(() => {});
-  devices = []; selectedId = null; fresh = false; lastRefresh = null;
+  devices = []; workloads = []; selectedId = null; fresh = false; lastRefresh = null;
   $('#logout').hidden = false; render(); refresh();
 };
 $('#logout').onclick = () => {
   dockerEpoch++; dockerViews.clear(); workspaceViews.clear(); pipelineViews.clear();
   if (token) fetch('api/v1/workspace-session', { method: 'DELETE', headers: { Authorization: 'Bearer ' + token, 'X-CoFleet-Request': '1' } }).catch(() => {});
-  generation++; controller?.abort(); token = ''; devices = []; fresh = false; selectedId = null; lastRefresh = null;
+  generation++; controller?.abort(); token = ''; devices = []; workloads = []; fresh = false; selectedId = null; lastRefresh = null;
   $('#login-panel').hidden = false; $('#logout').hidden = true; $('#refresh').disabled = true;
   setConnection('已断开'); setNotice('凭据已从页面内存清除。'); render();
 };

@@ -17,6 +17,7 @@ use uuid::Uuid;
 pub struct Hub {
     tunnels: crate::workspace_proxy::Tunnels,
     records: Arc<RwLock<HashMap<(String, Uuid), Record>>>,
+    scheduler: Arc<tokio::sync::Mutex<crate::scheduler::Scheduler>>,
 }
 struct Session {
     id: Uuid,
@@ -42,6 +43,35 @@ pub struct Device {
     pub planning_capacity: Option<crate::resources::PlanningCapacity>,
 }
 impl Hub {
+    async fn schedule_nodes(&self, user: &str) -> Vec<crate::scheduler::ScheduleNode> {
+        self.records
+            .read()
+            .await
+            .iter()
+            .filter(|((owner, _), _)| owner == user)
+            .map(|(_, record)| crate::scheduler::ScheduleNode {
+                state: record.state.clone(),
+                online: record.session.is_some()
+                    && record.seen_at.elapsed().as_secs()
+                        < (record.state.heartbeat_secs * 3).max(15),
+            })
+            .collect()
+    }
+    pub async fn schedule(
+        &self,
+        user: &str,
+        request: crate::scheduler::ScheduleRequest,
+    ) -> anyhow::Result<crate::scheduler::Placement> {
+        let nodes = self.schedule_nodes(user).await;
+        self.scheduler.lock().await.submit(user, &nodes, request)
+    }
+    pub async fn workloads(&self, user: &str) -> Vec<crate::scheduler::Placement> {
+        let nodes = self.schedule_nodes(user).await;
+        self.scheduler.lock().await.list(user, &nodes)
+    }
+    pub async fn remove_workload(&self, user: &str, id: Uuid) -> bool {
+        self.scheduler.lock().await.remove(user, id)
+    }
     pub async fn owns_device(&self, user: &str, device: Uuid) -> bool {
         self.records
             .read()
@@ -367,6 +397,7 @@ mod tests {
             version: "test".into(),
             resources: None,
             resource_policy: Default::default(),
+            capabilities: Default::default(),
         }
     }
     #[tokio::test]

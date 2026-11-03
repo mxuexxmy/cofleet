@@ -105,8 +105,8 @@ pub struct DockerController {
 impl DockerController {
     pub fn open(dir: &Path, device: Uuid) -> Result<Self> {
         ensure!(
-            cfg!(target_os = "linux"),
-            "Docker execution is currently supported only on native Linux"
+            cfg!(any(target_os = "linux", target_os = "windows")),
+            "Docker execution is supported on Linux and Windows with Linux containers"
         );
         let path = dir.join("docker-state.json");
         let desired: Desired = match std::fs::read(&path) {

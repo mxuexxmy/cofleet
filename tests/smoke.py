@@ -10,6 +10,7 @@ import time
 import unittest
 import urllib.request
 import urllib.error
+import uuid
 
 BIN = Path(os.environ.get('COFLEET_BIN_DIR', 'target/debug')).resolve()
 TOKEN = 'cofleet-integration-token-0123456789'
@@ -90,6 +91,20 @@ class Smoke(unittest.TestCase):
         current = self.devices()[0]
         self.assertEqual(current['planning_capacity']['cpu_threads'], max(0, current['resources']['logical_cpus'] - 1))
         self.assertEqual(current['planning_capacity']['memory_bytes'], max(0, current['resources']['total_memory_bytes'] - 128*1024*1024))
+        host_id = str(uuid.uuid4())
+        self.ctl('capabilities', '--physical-host-id', host_id, '--data-location', 'test-data', '--availability', 'always-on')
+        self.wait_for(lambda: self.devices()[0]['capabilities']['physical_host_id'] == host_id)
+        self.assertEqual(self.devices()[0]['capabilities']['data_locations'], ['test-data'])
+        workload_id = str(uuid.uuid4())
+        payload = json.dumps({'workload_id': workload_id, 'kind': 'batch', 'requirements': {'cpu_threads': 1, 'memory_mib': 64}}).encode()
+        req = urllib.request.Request(self.url + '/api/v1/workloads', data=payload, headers={'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json', 'X-CoFleet-Request': '1'}, method='POST')
+        with urllib.request.urlopen(req, timeout=3) as response:
+            placement = json.load(response)
+        self.assertEqual(placement['action'], 'wait')
+        self.assertIn('executor', placement['reason'])
+        req = urllib.request.Request(self.url + '/api/v1/workloads/' + workload_id, headers={'Authorization': 'Bearer ' + TOKEN, 'X-CoFleet-Request': '1'}, method='DELETE')
+        with urllib.request.urlopen(req, timeout=3) as response:
+            self.assertEqual(response.status, 204)
         invalid = self.ctl('reserve', '--cpu-threads', '1', '--memory-mib', str(2**64-1), check=False)
         self.assertNotEqual(invalid.returncode, 0)
         self.assertEqual(self.status()['resource_policy']['reserved_memory_mib'], 128)

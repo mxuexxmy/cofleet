@@ -29,6 +29,9 @@ enum Command {
         name: String,
         #[arg(long, default_value_t = 5)]
         heartbeat_secs: u64,
+        /// Shared by Windows and WSL agents on the same physical computer
+        #[arg(long)]
+        physical_host_id: Option<uuid::Uuid>,
     },
     /// View containers, set test workload intent, or read its bounded logs
     Docker {
@@ -52,6 +55,19 @@ enum Command {
         cpu_threads: u32,
         #[arg(long)]
         memory_mib: u64,
+    },
+    /// Configure scheduler-visible node capabilities (replaces the previous set)
+    Capabilities {
+        #[arg(long)]
+        physical_host_id: Option<uuid::Uuid>,
+        #[arg(long, requires = "gpu_memory_mib")]
+        gpu_name: Option<String>,
+        #[arg(long, requires = "gpu_name")]
+        gpu_memory_mib: Option<u64>,
+        #[arg(long)]
+        data_location: Vec<String>,
+        #[arg(long, value_enum, default_value_t = cofleet::resources::AvailabilityPreference::Opportunistic)]
+        availability: cofleet::resources::AvailabilityPreference,
     },
     /// 显示配置路径，不输出凭据；修改连接设置后重启 Agent
     ConfigPath,
@@ -112,6 +128,7 @@ async fn main() -> Result<()> {
             lzc_core_config,
             name,
             heartbeat_secs,
+            physical_host_id,
         } => {
             if args.data_dir.join("agent.toml").exists() {
                 bail!("configuration already exists; edit it instead of replacing device identity");
@@ -121,8 +138,9 @@ async fn main() -> Result<()> {
                     .map_err(|_| anyhow::anyhow!("set COFLEET_TOKEN before init"))?,
                 cofleet::auth::AuthMode::Lazycat => String::new(),
             };
+            let device_id = uuid::Uuid::new_v4();
             Config {
-                device_id: uuid::Uuid::new_v4(),
+                device_id,
                 name,
                 manager_url: manager.trim_end_matches('/').into(),
                 token,
@@ -131,6 +149,10 @@ async fn main() -> Result<()> {
                 heartbeat_secs,
                 accepting_tasks: true,
                 resource_policy: Default::default(),
+                capabilities: cofleet::resources::NodeCapabilities {
+                    physical_host_id: Some(physical_host_id.unwrap_or(device_id)),
+                    ..Default::default()
+                },
             }
             .save(&args.data_dir)?;
             println!("Created {}", args.data_dir.join("agent.toml").display());
@@ -226,6 +248,23 @@ async fn main() -> Result<()> {
                     policy: cofleet::resources::ResourcePolicy {
                         reserved_cpu_threads: cpu_threads,
                         reserved_memory_mib: memory_mib,
+                    },
+                },
+                Command::Capabilities {
+                    physical_host_id,
+                    gpu_name,
+                    gpu_memory_mib,
+                    data_location,
+                    availability,
+                } => LocalRequest::SetCapabilities {
+                    capabilities: cofleet::resources::NodeCapabilities {
+                        physical_host_id,
+                        gpu: gpu_name.map(|name| cofleet::resources::GpuCapability {
+                            name,
+                            memory_mib: gpu_memory_mib.unwrap_or_default(),
+                        }),
+                        data_locations: data_location,
+                        availability,
                     },
                 },
                 _ => unreachable!(),

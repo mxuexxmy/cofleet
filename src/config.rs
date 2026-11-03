@@ -20,6 +20,8 @@ pub struct Config {
     pub accepting_tasks: bool,
     #[serde(default)]
     pub resource_policy: crate::resources::ResourcePolicy,
+    #[serde(default)]
+    pub capabilities: crate::resources::NodeCapabilities,
 }
 
 pub fn data_dir() -> PathBuf {
@@ -58,6 +60,7 @@ pub fn private_dir(path: &Path) -> Result<()> {
 impl Config {
     pub fn validate(&self) -> Result<()> {
         self.resource_policy.validate()?;
+        self.capabilities.validate()?;
         let url = reqwest::Url::parse(&self.manager_url).context("invalid manager URL")?;
         let loopback = matches!(
             url.host_str(),
@@ -213,6 +216,7 @@ mod tests {
             heartbeat_secs: 5,
             accepting_tasks: true,
             resource_policy: Default::default(),
+            capabilities: Default::default(),
         };
         assert!(c.validate().is_ok());
         c.manager_url = "http://example.com".into();
@@ -235,6 +239,7 @@ mod tests {
             heartbeat_secs: 5,
             accepting_tasks: true,
             resource_policy: Default::default(),
+            capabilities: Default::default(),
         };
         c.save(&dir).unwrap();
         c.accepting_tasks = false;

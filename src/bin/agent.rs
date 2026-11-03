@@ -18,12 +18,12 @@ use tokio_tungstenite::{
     tungstenite::{Message, client::IntoClientRequest, protocol::WebSocketConfig},
 };
 
-#[derive(Parser)]
+#[derive(Clone, Parser)]
 #[command(about = "CoFleet 后台节点 Agent")]
 struct Args {
     #[arg(long, default_value_os_t = data_dir())]
     data_dir: PathBuf,
-    /// Enable the fixed test workload on the native local Linux Docker engine
+    /// Enable the fixed test workload on a local Linux container engine
     #[arg(long)]
     docker: bool,
     /// Approve one local immutable development workspace image (enables remote IDE shell in its container)
@@ -32,6 +32,10 @@ struct Args {
     /// Enable trusted-project Docker builds and stateless application releases
     #[arg(long, requires = "workspace_image")]
     build_deploy: bool,
+    /// Run under the Windows Service Control Manager (installed service only)
+    #[cfg(windows)]
+    #[arg(long)]
+    service: bool,
 }
 struct State {
     config: Config,
@@ -45,6 +49,17 @@ struct State {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    #[cfg(windows)]
+    if args.service {
+        return windows_service_host::run(args);
+    }
+    run_agent(args, None).await
+}
+
+async fn run_agent(
+    args: Args,
+    service_stop: Option<tokio::sync::oneshot::Receiver<()>>,
+) -> Result<()> {
     let config = Config::load(&args.data_dir)?;
     let mut listener = ipc::Listener::bind(&args.data_dir, &config)?;
     let state = Arc::new(Mutex::new(State {
@@ -59,6 +74,7 @@ async fn main() -> Result<()> {
             last_error: None,
             resources: None,
             resource_policy: config.resource_policy.clone(),
+            capabilities: config.capabilities.clone(),
         },
         docker: if args.docker {
             Some(cofleet::docker::DockerController::open(
@@ -126,7 +142,14 @@ async fn main() -> Result<()> {
         args.docker
     );
     let slots = Arc::new(tokio::sync::Semaphore::new(16));
-    let shutdown = shutdown_signal();
+    let shutdown = async move {
+        match service_stop {
+            Some(stop) => {
+                let _ = stop.await;
+            }
+            None => shutdown_signal().await,
+        }
+    };
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
@@ -148,6 +171,7 @@ async fn main() -> Result<()> {
                             LocalRequest::Pause => { next.accepting_tasks = false; true },
                             LocalRequest::Resume => { next.accepting_tasks = true; true },
                             LocalRequest::SetResourcePolicy { policy } => { next.resource_policy = policy; true },
+                            LocalRequest::SetCapabilities { capabilities } => { next.capabilities = capabilities; true },
                             LocalRequest::Status => false,
                             LocalRequest::Docker { .. } => unreachable!(),
                         };
@@ -159,6 +183,7 @@ async fn main() -> Result<()> {
                                         Ok(()) => {
                                             state.status.accepting_tasks = next.accepting_tasks;
                                             state.status.resource_policy = next.resource_policy.clone();
+                                            state.status.capabilities = next.capabilities.clone();
                                             state.config = next;
                                             notify.notify_one();
                                         },
@@ -256,6 +281,7 @@ fn heartbeat(state: &State) -> Heartbeat {
         version: env!("CARGO_PKG_VERSION").into(),
         resources: state.monitor.snapshot(),
         resource_policy: config.resource_policy.clone(),
+        capabilities: config.capabilities.clone(),
     }
 }
 async fn mark_success(state: &Arc<Mutex<State>>) {
@@ -440,5 +466,82 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(windows)]
+mod windows_service_host {
+    use super::{Args, run_agent};
+    use std::{ffi::OsString, sync::OnceLock, time::Duration};
+    use windows_service::{
+        define_windows_service,
+        service::{
+            ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
+            ServiceType,
+        },
+        service_control_handler::{self, ServiceControlHandlerResult},
+        service_dispatcher,
+    };
+
+    const SERVICE_NAME: &str = "CoFleetAgent";
+    static ARGS: OnceLock<Args> = OnceLock::new();
+    define_windows_service!(ffi_service_main, service_main);
+
+    pub fn run(args: Args) -> anyhow::Result<()> {
+        ARGS.set(args)
+            .map_err(|_| anyhow::anyhow!("Windows service arguments already initialized"))?;
+        service_dispatcher::start(SERVICE_NAME, ffi_service_main)?;
+        Ok(())
+    }
+
+    fn service_main(_arguments: Vec<OsString>) {
+        let _ = run_service();
+    }
+
+    fn run_service() -> anyhow::Result<()> {
+        let args = ARGS
+            .get()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Windows service arguments unavailable"))?;
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        let sender = std::sync::Mutex::new(Some(stop_tx));
+        let handler = move |event| match event {
+            ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+            ServiceControl::Stop => {
+                if let Some(sender) = sender.lock().ok().and_then(|mut value| value.take()) {
+                    let _ = sender.send(());
+                }
+                ServiceControlHandlerResult::NoError
+            }
+            _ => ServiceControlHandlerResult::NotImplemented,
+        };
+        let status = service_control_handler::register(SERVICE_NAME, handler)?;
+        status.set_service_status(ServiceStatus {
+            service_type: ServiceType::OWN_PROCESS,
+            current_state: ServiceState::Running,
+            controls_accepted: ServiceControlAccept::STOP,
+            exit_code: ServiceExitCode::Win32(0),
+            checkpoint: 0,
+            wait_hint: Duration::default(),
+            process_id: None,
+        })?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let result = runtime.block_on(run_agent(args, Some(stop_rx)));
+        status.set_service_status(ServiceStatus {
+            service_type: ServiceType::OWN_PROCESS,
+            current_state: ServiceState::Stopped,
+            controls_accepted: ServiceControlAccept::empty(),
+            exit_code: if result.is_ok() {
+                ServiceExitCode::Win32(0)
+            } else {
+                ServiceExitCode::ServiceSpecific(1)
+            },
+            checkpoint: 0,
+            wait_hint: Duration::default(),
+            process_id: None,
+        })?;
+        result
     }
 }

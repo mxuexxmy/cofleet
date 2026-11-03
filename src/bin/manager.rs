@@ -4,7 +4,7 @@ use axum::{
     extract::{ConnectInfo, DefaultBodyLimit, Path, Request, State, WebSocketUpgrade},
     http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Response},
-    routing::{any, get, post},
+    routing::{any, delete, get, post},
 };
 use clap::Parser;
 use cofleet::{
@@ -87,6 +87,57 @@ async fn docker_command(
     }
     let user = app.auth.identify(&headers, peer.ip())?;
     Ok(Json(app.hub.docker(&user, device, request).await?))
+}
+async fn schedule_workload(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(request): Json<cofleet::scheduler::ScheduleRequest>,
+) -> Result<Json<cofleet::scheduler::Placement>, (StatusCode, String)> {
+    if headers
+        .get("x-cofleet-request")
+        .and_then(|v| v.to_str().ok())
+        != Some("1")
+    {
+        return Err((StatusCode::FORBIDDEN, "missing request marker".into()));
+    }
+    let user = app
+        .auth
+        .identify(&headers, peer.ip())
+        .map_err(|status| (status, "authentication failed".into()))?;
+    app.hub
+        .schedule(&user, request)
+        .await
+        .map(Json)
+        .map_err(|error| (StatusCode::CONFLICT, error.to_string()))
+}
+async fn workloads(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<cofleet::scheduler::Placement>>, StatusCode> {
+    let user = app.auth.identify(&headers, peer.ip())?;
+    Ok(Json(app.hub.workloads(&user).await))
+}
+async fn remove_workload(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(workload): Path<uuid::Uuid>,
+    headers: HeaderMap,
+) -> Result<StatusCode, StatusCode> {
+    if headers
+        .get("x-cofleet-request")
+        .and_then(|v| v.to_str().ok())
+        != Some("1")
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let user = app.auth.identify(&headers, peer.ip())?;
+    if app.hub.remove_workload(&user, workload).await {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
 }
 async fn workspace_session(
     State(app): State<App>,
@@ -355,6 +406,8 @@ async fn main() -> Result<()> {
         .route("/workspaces/{device}/", any(workspace_proxy))
         .route("/workspaces/{device}/{*path}", any(workspace_proxy))
         .route("/api/v1/devices", get(devices))
+        .route("/api/v1/workloads", get(workloads).post(schedule_workload))
+        .route("/api/v1/workloads/{workload}", delete(remove_workload))
         .route("/api/v1/devices/{device}/refresh", post(refresh))
         .route("/api/v1/devices/{device}/docker", post(docker_command))
         .layer(DefaultBodyLimit::max(4096))

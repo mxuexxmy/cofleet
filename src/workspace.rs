@@ -1,4 +1,4 @@
-//! One opt-in persistent development workspace per native Linux node.
+//! One opt-in persistent development workspace per Linux-container node.
 use crate::docker::{DockerReply, docker};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -62,8 +62,8 @@ pub struct WorkspaceController {
 impl WorkspaceController {
     pub fn open(dir: &Path, device: Uuid, image: String) -> Result<Self> {
         ensure!(
-            cfg!(target_os = "linux"),
-            "workspace execution currently requires native Linux"
+            cfg!(any(target_os = "linux", target_os = "windows")),
+            "workspace execution requires Linux or Windows with Linux containers"
         );
         ensure!(
             valid_image_id(&image),

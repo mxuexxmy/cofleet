@@ -118,8 +118,8 @@ pub struct PipelineController {
 impl PipelineController {
     pub fn open(dir: &Path, device: Uuid, workspace: WorkspaceController) -> Result<Self> {
         ensure!(
-            cfg!(target_os = "linux"),
-            "build/deploy currently requires native Linux"
+            cfg!(any(target_os = "linux", target_os = "windows")),
+            "build/deploy requires Linux or Windows with Linux containers"
         );
         let dir = dir.join("pipeline");
         crate::config::private_dir(&dir)?;

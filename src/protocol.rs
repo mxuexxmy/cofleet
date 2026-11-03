@@ -19,6 +19,8 @@ pub struct Heartbeat {
     pub resources: Option<crate::resources::ResourceSnapshot>,
     #[serde(default)]
     pub resource_policy: crate::resources::ResourcePolicy,
+    #[serde(default)]
+    pub capabilities: crate::resources::NodeCapabilities,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -34,6 +36,8 @@ pub struct AgentStatus {
     pub resources: Option<crate::resources::ResourceSnapshot>,
     #[serde(default)]
     pub resource_policy: crate::resources::ResourcePolicy,
+    #[serde(default)]
+    pub capabilities: crate::resources::NodeCapabilities,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -47,6 +51,9 @@ pub enum LocalRequest {
     Resume,
     SetResourcePolicy {
         policy: crate::resources::ResourcePolicy,
+    },
+    SetCapabilities {
+        capabilities: crate::resources::NodeCapabilities,
     },
 }
 
@@ -77,6 +84,7 @@ impl Heartbeat {
             && self.arch.len() <= 32
             && self.version.len() <= 64
             && self.resource_policy.validate().is_ok()
+            && self.capabilities.validate().is_ok()
             && self.resources.as_ref().is_none_or(|r| r.valid())
     }
 }
