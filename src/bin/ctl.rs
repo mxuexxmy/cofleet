@@ -35,6 +35,10 @@ enum Command {
         #[command(subcommand)]
         command: DockerCommand,
     },
+    Workspace {
+        #[command(subcommand)]
+        command: DockerCommand,
+    },
     Status,
     Pause,
     Resume,
@@ -113,6 +117,26 @@ async fn main() -> Result<()> {
                             }
                         }
                         DockerCommand::Logs => cofleet::docker::DockerRequest::TestLogs,
+                    },
+                },
+                Command::Workspace { command } => LocalRequest::Docker {
+                    request: cofleet::docker::DockerRequest::Workspace {
+                        request: match command {
+                            DockerCommand::List => cofleet::workspace::WorkspaceRequest::Status,
+                            DockerCommand::Start { request_id } => {
+                                cofleet::workspace::WorkspaceRequest::SetRunning {
+                                    request_id,
+                                    running: true,
+                                }
+                            }
+                            DockerCommand::Stop { request_id } => {
+                                cofleet::workspace::WorkspaceRequest::SetRunning {
+                                    request_id,
+                                    running: false,
+                                }
+                            }
+                            DockerCommand::Logs => cofleet::workspace::WorkspaceRequest::Logs,
+                        },
                     },
                 },
                 Command::Status => LocalRequest::Status,

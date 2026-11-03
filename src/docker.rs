@@ -19,8 +19,14 @@ const SPEC_VERSION: &str = "test-v1";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum DockerRequest {
+    Workspace {
+        request: crate::workspace::WorkspaceRequest,
+    },
     List,
-    SetTest { request_id: Uuid, running: bool },
+    SetTest {
+        request_id: Uuid,
+        running: bool,
+    },
     TestLogs,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -42,6 +48,8 @@ pub struct DockerSnapshot {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DockerReply {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<crate::workspace::WorkspaceSnapshot>,
     pub snapshot: Option<DockerSnapshot>,
     pub logs: Option<String>,
     pub duplicate: bool,
@@ -151,6 +159,9 @@ impl DockerController {
                         .0;
                     let output = docker(&["logs", "--tail", "40", "--timestamps", &id]).await?;
                     reply.logs = Some(output[..output.floor_char_boundary(4096)].to_owned());
+                }
+                DockerRequest::Workspace { .. } => {
+                    anyhow::bail!("workspace dispatcher unavailable")
                 }
                 DockerRequest::List => {}
             }
@@ -320,7 +331,7 @@ fn persist(dir: &Path, desired: &Desired) -> Result<()> {
     }
     result.context("Docker desired state persistence failed")
 }
-async fn docker(args: &[&str]) -> Result<String> {
+pub(crate) async fn docker(args: &[&str]) -> Result<String> {
     // Ignore remote contexts/DOCKER_HOST. This feature targets the native local Linux engine.
     let mut child = Command::new("docker")
         .args(["--host", "unix:///var/run/docker.sock"])

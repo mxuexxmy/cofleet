@@ -1,0 +1,82 @@
+{
+  "date": "2026-11-03",
+  "timezone": "Asia/Shanghai",
+  "version": "0.4.0",
+  "native": {
+    "checks": {
+      "workspace_start_health_and_request_deduplication": true,
+      "ide_http_through_authenticated_reverse_data_channel": true,
+      "anonymous_and_cross_origin_workspace_access_rejected": true,
+      "project_source_dependency_and_service_preview": true,
+      "platform_credentials_not_forwarded_to_project": true,
+      "actual_debugger_breakpoint_inspection_and_resume_over_websocket": true,
+      "manager_restart_and_new_http_session_preserve_running_service": true,
+      "container_recreation_preserves_source_and_installed_dependencies": true,
+      "saved_project_start_script_restores_service": true,
+      "explicit_stop_retains_volume_and_cannot_be_undone_by_old_retry": true,
+      "private_durable_workspace_state": true
+    },
+    "scope": "native Linux; isolated development manager; all IDE traffic uses reverse WebSocket tunnel"
+  },
+  "microserver": {
+    "version": "0.4.0",
+    "scope": "current native omarchy through authenticated microserver domain; no independent off-LAN device",
+    "checks": {
+      "real_platform_login_and_workspace_http_proxy": true,
+      "workspace_start_retry_deduplicated": true,
+      "project_service_reachable_through_microserver": true,
+      "real_platform_credentials_not_forwarded_to_project": true,
+      "real_breakpoint_variable_inspection_and_resume_via_microserver": true,
+      "remote_file_write_and_shell_read_inside_workspace_via_inspector": true,
+      "fresh_connection_reenters_same_project_and_dependencies": true,
+      "lc02_proxy_resource_and_network_observations_recorded": true
+    },
+    "lc02_idle_snapshot": {
+      "CPUPerc": "0.01%",
+      "MemUsage": "14.27MiB / 31.12GiB",
+      "MemPerc": "0.04%",
+      "NetIO": "213kB / 197kB",
+      "PIDs": "16"
+    },
+    "lc02_during_transfer_snapshot": {
+      "CPUPerc": "2.48%",
+      "MemUsage": "13.95MiB / 31.12GiB",
+      "MemPerc": "0.04%",
+      "NetIO": "34.1MB / 34MB",
+      "PIDs": "16"
+    },
+    "latency_ms": {
+      "samples": 10,
+      "median": 25.21,
+      "max": 32.72
+    },
+    "download": {
+      "bytes": 33554432,
+      "seconds": 1.967,
+      "mib_per_second": 16.27
+    },
+    "lc02_after_transfer_snapshot": {
+      "CPUPerc": "0.01%",
+      "MemUsage": "13.95MiB / 31.12GiB",
+      "MemPerc": "0.04%",
+      "NetIO": "34.1MB / 34MB",
+      "PIDs": "16"
+    },
+    "network_limit": "Uses the current LazyCat route, which may be LAN/direct; not a measured independent WAN link. Docker snapshots are observations, not controlled peak measurements."
+  },
+  "browser": {
+    "scope": "isolated local manager using the same HTTP/data-tunnel implementation",
+    "file_edited_and_saved": true,
+    "terminal_dependency_installed_and_called": true,
+    "page_closed_and_reentered": true,
+    "new_terminal_opened": true,
+    "source_dependencies_and_service_preserved": true,
+    "optional_github_auth_provider_timeout_observed": true,
+    "embedded_browser_renderer_crash_observed_during_cleanup": true,
+    "renderer_crash_cause": "not determined; server health unaffected"
+  },
+  "actual_agent_restart_preserved_container_and_service": true,
+  "rust_tests_passed": 20,
+  "independent_wan_device_tested": false,
+  "wsl2_tested": false
+}

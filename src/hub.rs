@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 #[derive(Clone, Default)]
 pub struct Hub {
+    tunnels: crate::workspace_proxy::Tunnels,
     records: Arc<RwLock<HashMap<(String, Uuid), Record>>>,
 }
 struct Session {
@@ -22,6 +23,7 @@ struct Session {
     sender: mpsc::Sender<HubMessage>,
 }
 struct Record {
+    tunnel_slots: Arc<tokio::sync::Semaphore>,
     state: Heartbeat,
     seen_at: Instant,
     last_seen: u64,
@@ -40,6 +42,12 @@ pub struct Device {
     pub planning_capacity: Option<crate::resources::PlanningCapacity>,
 }
 impl Hub {
+    pub async fn owns_device(&self, user: &str, device: Uuid) -> bool {
+        self.records
+            .read()
+            .await
+            .contains_key(&(user.into(), device))
+    }
     pub async fn devices(&self, user: &str) -> Vec<Device> {
         let records = self.records.read().await;
         let mut devices: Vec<_> = records
@@ -83,6 +91,49 @@ impl Hub {
         record.pending_reports.push(request_id);
         Ok(request_id)
     }
+    pub async fn workspace_stream(
+        &self,
+        user: &str,
+        device: Uuid,
+    ) -> Result<tokio::io::DuplexStream, axum::http::StatusCode> {
+        use axum::http::StatusCode;
+        let (session, sender, slots) = {
+            let records = self.records.read().await;
+            let record = records
+                .get(&(user.into(), device))
+                .ok_or(StatusCode::NOT_FOUND)?;
+            let session = record.session.as_ref().ok_or(StatusCode::CONFLICT)?;
+            if !record
+                .state
+                .workspace
+                .as_ref()
+                .is_some_and(|w| w.healthy && w.desired_running)
+            {
+                return Err(StatusCode::SERVICE_UNAVAILABLE);
+            }
+            (
+                session.id,
+                session.sender.clone(),
+                record.tunnel_slots.clone(),
+            )
+        };
+        self.tunnels
+            .open(user, device, session, sender, slots)
+            .await
+    }
+    pub async fn claim_workspace_tunnel(
+        &self,
+        user: &str,
+        device: Uuid,
+        session: Uuid,
+        id: Uuid,
+    ) -> Option<crate::workspace_proxy::PendingTunnel> {
+        let records = self.records.read().await;
+        if records.get(&(user.into(), device))?.session.as_ref()?.id != session {
+            return None;
+        }
+        self.tunnels.claim(user, device, session, id)
+    }
     pub async fn docker(
         &self,
         user: &str,
@@ -98,7 +149,10 @@ impl Hub {
                 .get_mut(&(user.into(), device))
                 .ok_or(StatusCode::NOT_FOUND)?;
             let session = record.session.as_ref().ok_or(StatusCode::CONFLICT)?;
-            if record.state.docker.is_none() {
+            if record.state.docker.is_none()
+                || (matches!(&request, crate::docker::DockerRequest::Workspace { .. })
+                    && record.state.workspace.is_none())
+            {
                 return Err(StatusCode::CONFLICT);
             }
             record.pending_docker.retain(|_, tx| !tx.is_closed());
@@ -158,6 +212,7 @@ impl Hub {
         records.insert(
             key,
             Record {
+                tunnel_slots: Arc::new(tokio::sync::Semaphore::new(32)),
                 state,
                 seen_at: Instant::now(),
                 last_seen: unix_now(),
@@ -219,7 +274,7 @@ impl Hub {
         }
         let device = state.device_id;
         let mut idle_secs = (state.heartbeat_secs * 3).max(15);
-        let (sender, mut receiver) = mpsc::channel(8);
+        let (sender, mut receiver) = mpsc::channel(64);
         let Some(session) = self.attach(&user, state, sender).await else {
             return;
         };
@@ -290,6 +345,7 @@ mod tests {
     use super::*;
     fn state(id: Uuid) -> Heartbeat {
         Heartbeat {
+            workspace: None,
             docker: None,
             device_id: id,
             name: "node".into(),
@@ -315,6 +371,18 @@ mod tests {
                 .await
                 .unwrap_err(),
             axum::http::StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            hub.docker(
+                "alice",
+                device,
+                crate::docker::DockerRequest::Workspace {
+                    request: crate::workspace::WorkspaceRequest::Status
+                }
+            )
+            .await
+            .unwrap_err(),
+            axum::http::StatusCode::CONFLICT
         );
         let other = hub.clone();
         let call = tokio::spawn(async move {

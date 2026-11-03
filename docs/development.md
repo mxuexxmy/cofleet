@@ -132,3 +132,7 @@ Agent 每 5 秒采集一次 CPU 总使用率、逻辑线程数、总内存与可
 ## 0.3.0 原生 Docker 节点管理
 
 使用 `--docker` 启动 Linux Agent，在现有管理页查看容器和启停固定测试负载。详细命令、请求 ID 重试规则与实机验收见 [阶段 1 Docker 记录](stage1-docker.md)。可运行 `python3 tests/docker_native.py --allow-native-docker` 进行会创建临时测试容器的原生 Docker 集成检查。
+
+## 0.4.0 持久开发空间
+
+构建 `deploy/workspace` 开发镜像后，使用其不可变本地 image ID 启动 Agent：`--docker --workspace-image sha256:...`。管理页提供稳定入口、健康状态和项目预览。持久化与恢复策略、CLI/API、原生及真实微服验证步骤见 [阶段 2 文档](stage2-workspace.md)。

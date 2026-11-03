@@ -1,10 +1,10 @@
 use anyhow::Result;
 use axum::{
     Json, Router,
-    extract::{ConnectInfo, DefaultBodyLimit, Path, State, WebSocketUpgrade},
+    extract::{ConnectInfo, DefaultBodyLimit, Path, Request, State, WebSocketUpgrade},
     http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Response},
-    routing::{get, post},
+    routing::{any, get, post},
 };
 use clap::Parser;
 use cofleet::{
@@ -30,6 +30,7 @@ struct Args {
 }
 #[derive(Clone)]
 struct App {
+    workspace_cookie: String,
     auth: Arc<Authenticator>,
     hub: Hub,
     connections: Arc<tokio::sync::Semaphore>,
@@ -87,6 +88,134 @@ async fn docker_command(
     let user = app.auth.identify(&headers, peer.ip())?;
     Ok(Json(app.hub.docker(&user, device, request).await?))
 }
+async fn workspace_session(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    if headers
+        .get("x-cofleet-request")
+        .and_then(|v| v.to_str().ok())
+        != Some("1")
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    app.auth.identify(&headers, peer.ip())?;
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    if app.auth.mode == AuthMode::Development {
+        response.headers_mut().insert(
+            header::SET_COOKIE,
+            format!(
+                "cofleet_workspace={}; Path=/workspaces/; HttpOnly; SameSite=Strict",
+                app.workspace_cookie
+            )
+            .parse()
+            .unwrap(),
+        );
+    }
+    Ok(response)
+}
+async fn clear_workspace_session(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    if headers
+        .get("x-cofleet-request")
+        .and_then(|v| v.to_str().ok())
+        != Some("1")
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    app.auth.identify(&headers, peer.ip())?;
+    Ok((
+        [(
+            header::SET_COOKIE,
+            "cofleet_workspace=; Path=/workspaces/; HttpOnly; SameSite=Strict; Max-Age=0",
+        )],
+        StatusCode::NO_CONTENT,
+    )
+        .into_response())
+}
+async fn workspace_proxy(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(params): Path<std::collections::HashMap<String, String>>,
+    request: Request,
+) -> Result<Response, StatusCode> {
+    if !cofleet::workspace_proxy::origin_allowed(request.headers()) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let user = match app.auth.identify(request.headers(), peer.ip()) {
+        Ok(user) => user,
+        Err(error) => {
+            let cookie = request
+                .headers()
+                .get(header::COOKIE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if app.auth.mode == AuthMode::Development
+                && cookie
+                    .split(';')
+                    .any(|v| v.trim() == format!("cofleet_workspace={}", app.workspace_cookie))
+            {
+                "development".into()
+            } else {
+                return Err(error);
+            }
+        }
+    };
+    let device = params
+        .get("device")
+        .ok_or(StatusCode::BAD_REQUEST)?
+        .parse::<uuid::Uuid>()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let prefix = format!("/workspaces/{device}/");
+    // Resolve ownership even before returning the trailing slash redirect.
+    if !app.hub.owns_device(&user, device).await {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    if request.uri().path() == prefix.trim_end_matches('/') {
+        let location = format!(
+            "{}{}",
+            prefix,
+            request
+                .uri()
+                .query()
+                .map(|q| format!("?{q}"))
+                .unwrap_or_default()
+        );
+        return Ok(axum::response::Redirect::temporary(&location).into_response());
+    }
+    let stream = app.hub.workspace_stream(&user, device).await?;
+    cofleet::workspace_proxy::proxy(request, stream, &prefix).await
+}
+async fn workspace_tunnel(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path((device, id)): Path<(uuid::Uuid, uuid::Uuid)>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> Result<Response, StatusCode> {
+    if headers.contains_key(header::ORIGIN) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let user = app.auth.identify(&headers, peer.ip())?;
+    let session = headers
+        .get("x-cofleet-session")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let tunnel = app
+        .hub
+        .claim_workspace_tunnel(&user, device, session, id)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(upgrade
+        .max_message_size(MAX_FRAME_BYTES)
+        .max_frame_size(MAX_FRAME_BYTES)
+        .on_upgrade(|socket| cofleet::workspace_proxy::serve_tunnel(socket, tunnel)))
+}
 async fn ws(
     State(app): State<App>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -135,6 +264,7 @@ async fn main() -> Result<()> {
         }
     };
     let app = App {
+        workspace_cookie: uuid::Uuid::new_v4().to_string(),
         auth: Arc::new(Authenticator {
             mode: args.auth,
             token,
@@ -201,6 +331,14 @@ async fn main() -> Result<()> {
         )
         .route("/api/whoami", get(whoami))
         .route("/api/ws", get(ws))
+        .route(
+            "/api/v1/workspace-session",
+            post(workspace_session).delete(clear_workspace_session),
+        )
+        .route("/api/workspace-tunnel/{device}/{id}", get(workspace_tunnel))
+        .route("/workspaces/{device}", any(workspace_proxy))
+        .route("/workspaces/{device}/", any(workspace_proxy))
+        .route("/workspaces/{device}/{*path}", any(workspace_proxy))
         .route("/api/v1/devices", get(devices))
         .route("/api/v1/devices/{device}/refresh", post(refresh))
         .route("/api/v1/devices/{device}/docker", post(docker_command))

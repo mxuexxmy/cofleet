@@ -3,6 +3,7 @@ const $ = selector => document.querySelector(selector);
 let token = '', platformLogin = false, devices = [], selectedId = null, fresh = false;
 let generation = 0, controller = null, lastRefresh = null;
 const dockerViews = new Map();
+const workspaceViews = new Map();
 let dockerEpoch = 0;
 const osNames = { linux: 'Linux', windows: 'Windows', macos: 'macOS' };
 
@@ -115,6 +116,7 @@ function renderDetails(device) {
   pair(info, '资源采集时间', resources ? new Date(resources.sampled_at_unix * 1000).toLocaleString('zh-CN') : '—');
   area.append(info);
   renderDocker(area, device);
+  renderWorkspace(area, device);
 }
 function renderDocker(area, device) {
   const section = el('section', 'docker-section');
@@ -190,6 +192,66 @@ async function dockerCall(deviceId, request) {
     if (epoch === dockerEpoch) { view.busy = false; render(); }
   }
 }
+function renderWorkspace(area, device) {
+  const section = el('section', 'workspace-section'), head = el('div', 'section-head');
+  head.append(el('h3', '', '持久开发空间'), el('span', 'section-note', '浏览器编辑器 · 项目与依赖持久保存'));
+  section.append(head); area.append(section);
+  const workspace = device.workspace;
+  if (!workspace) {
+    section.append(el('p', '', '本机尚未启用开发空间。请在节点批准开发镜像后启动 Agent。')); return;
+  }
+  let view = workspaceViews.get(device.device_id);
+  if (!view) { view = { busy: false, pending: null, message: '', logs: null }; workspaceViews.set(device.device_id, view); }
+  const status = !workspace.desired_running ? '已停止' : workspace.healthy ? '编辑器就绪' : workspace.state === 'running' ? '编辑器正在启动' : '等待恢复';
+  section.append(el('p', '', status + ' · 项目服务 ' + (workspace.project_service_healthy ? '健康' : '未就绪')));
+  section.append(el('p', 'policy-tip', 'code-server · Node.js / Python / Git · 2 CPU / 2 GiB。关闭页面不停止工作空间；停止容器保留项目、依赖和编辑器设置。'));
+  const actions = el('div', 'docker-actions');
+  const link = el('a', 'workspace-link', '进入开发空间');
+  const ready = fresh && device.online && workspace.healthy && workspace.desired_running;
+  if (ready) { link.href = 'workspaces/' + device.device_id + '/'; link.target = '_blank'; link.rel = 'noopener noreferrer'; }
+  else { link.setAttribute('aria-disabled', 'true'); link.tabIndex = -1; }
+  actions.append(link);
+  for (const [label, running] of [['启动工作空间', true], ['停止工作空间', false]]) {
+    const retry = view.pending?.running === running;
+    const button = el('button', 'secondary', retry ? '重试' + label : label); button.type = 'button';
+    button.disabled = view.busy || !fresh || !device.online || (running && !device.accepting_tasks && !retry);
+    button.onclick = () => {
+      if (!retry) view.pending = { action: 'set_running', request_id: crypto.randomUUID(), running };
+      workspaceCall(device.device_id, view.pending);
+    };
+    actions.append(button);
+  }
+  const logs = el('button', 'quiet', '工作空间日志'); logs.type = 'button'; logs.disabled = view.busy || !fresh || !device.online;
+  logs.onclick = () => workspaceCall(device.device_id, { action: 'logs' }); actions.append(logs); section.append(actions);
+  const info = el('dl'); pair(info, '项目目录', workspace.project_path); pair(info, '持久卷', workspace.volume); section.append(info);
+  section.append(el('p', 'policy-tip', '项目的 .cofleet/start.sh 会在容器启动时执行。默认预览端口为 3000，健康检查路径为 /health。'));
+  if (ready) { const preview = el('a', '', '打开项目预览'); preview.href = 'workspaces/' + device.device_id + '/proxy/3000/'; preview.target = '_blank'; preview.rel = 'noopener noreferrer'; section.append(preview); }
+  if (workspace.error) section.append(el('p', 'resource-warning', workspace.error));
+  if (view.message) { const message = el('p', 'policy-tip', view.message); message.setAttribute('role', 'status'); section.append(message); }
+  if (view.logs !== null) section.append(el('pre', 'container-logs', view.logs || '暂无日志。'));
+}
+async function workspaceCall(deviceId, request) {
+  const view = workspaceViews.get(deviceId), epoch = dockerEpoch;
+  if (!view || view.busy) return;
+  view.busy = true; view.message = '正在保存并核对工作空间…'; render();
+  const abort = new AbortController(), timeout = setTimeout(() => abort.abort(), 15000);
+  try {
+    const response = await fetch('api/v1/devices/' + deviceId + '/docker', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CoFleet-Request': '1', ...(platformLogin ? {} : { Authorization: 'Bearer ' + token }) },
+      body: JSON.stringify({ action: 'workspace', request }), signal: abort.signal, redirect: 'error'
+    });
+    if (!response.ok) throw new Error('工作空间请求未确认（' + response.status + '），请用重试按钮继续核对。');
+    const reply = await response.json();
+    if (epoch !== dockerEpoch) return;
+    const device = devices.find(d => d.device_id === deviceId);
+    if (device && reply.workspace) device.workspace = reply.workspace;
+    if (reply.logs !== null && reply.logs !== undefined) view.logs = reply.logs;
+    if (reply.error) view.message = reply.error;
+    else { if (request.action === 'set_running') view.pending = null; view.message = reply.duplicate ? '已核对同一次请求的当前状态。' : '已保存，健康状态会自动更新。'; }
+  } catch (error) {
+    if (epoch === dockerEpoch) view.message = error.name === 'AbortError' ? '等待超时，后台可能已执行。重试会沿用同一次操作。' : error.message;
+  } finally { clearTimeout(timeout); if (epoch === dockerEpoch) { view.busy = false; render(); } }
+}
 function render() {
   const query = $('#search').value.trim().toLocaleLowerCase();
   const visible = devices.filter(d => (!$('#online-only').checked || (fresh && d.online)) && [d.name, d.os, d.arch, d.device_id].some(v => String(v).toLocaleLowerCase().includes(query)));
@@ -245,13 +307,15 @@ async function refresh() {
   }
 }
 $('#login').onsubmit = event => {
-  dockerEpoch++; dockerViews.clear();
+  dockerEpoch++; dockerViews.clear(); workspaceViews.clear();
   event.preventDefault(); token = $('#token').value; $('#token').value = '';
+  fetch('api/v1/workspace-session', { method: 'POST', headers: { Authorization: 'Bearer ' + token, 'X-CoFleet-Request': '1' } }).catch(() => {});
   devices = []; selectedId = null; fresh = false; lastRefresh = null;
   $('#logout').hidden = false; render(); refresh();
 };
 $('#logout').onclick = () => {
-  dockerEpoch++; dockerViews.clear();
+  dockerEpoch++; dockerViews.clear(); workspaceViews.clear();
+  if (token) fetch('api/v1/workspace-session', { method: 'DELETE', headers: { Authorization: 'Bearer ' + token, 'X-CoFleet-Request': '1' } }).catch(() => {});
   generation++; controller?.abort(); token = ''; devices = []; fresh = false; selectedId = null; lastRefresh = null;
   $('#login-panel').hidden = false; $('#logout').hidden = true; $('#refresh').disabled = true;
   setConnection('已断开'); setNotice('凭据已从页面内存清除。'); render();
