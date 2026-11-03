@@ -38,6 +38,7 @@ CoFleet 是基于懒猫微服网络的个人开发与应用运行平台构想：
 - [技术选型与原型验证](docs/technology.md)
 - [开发与运行原型](docs/development.md)
 - [管理端界面与交互](docs/manager-ui.md)
+- [Docker 应用观察与统一访问方案（待实现）](docs/docker-observe-access.md)
 - [持久开发空间与阶段 2 验证](docs/stage2-workspace.md)
 - [构建到部署与阶段 3 验证](docs/stage3-pipeline.md)
 - [多节点协作与 Windows Agent](docs/stage4-multinode.md)
