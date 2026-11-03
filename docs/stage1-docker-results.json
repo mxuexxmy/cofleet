@@ -1,0 +1,41 @@
+{
+  "checks": {
+    "authentication_and_csrf_header_required": true,
+    "container_inventory": true,
+    "unmanaged_name_collision_not_mutated": true,
+    "lost_response_and_concurrent_retries_use_one_instance": true,
+    "bounded_logs_and_fixed_container_limits": true,
+    "manager_disconnect_keeps_container_running": true,
+    "manager_restart_restores_observed_state": true,
+    "agent_restart_reconciles_persisted_running_intent": true,
+    "explicit_stop_survives_restart_and_delayed_start_retry": true,
+    "paused_node_rejects_new_start": true,
+    "desired_state_is_private_and_durable": true
+  },
+  "docker_server": "29.9.2",
+  "scope": "native Linux, isolated development manager and node",
+  "date": "2026-11-03",
+  "timezone": "Asia/Shanghai",
+  "release_version": "0.3.0",
+  "microserver": {
+    "date": "2026-11-03",
+    "manager_version": "0.3.0",
+    "agent_version": "0.3.0",
+    "checks": {
+      "real_lazycat_login_wss_container_inventory": true,
+      "microserver_starts_native_omarchy_test_container": true,
+      "microserver_retry_deduplicated": true,
+      "microserver_reads_native_container_logs": true,
+      "microserver_explicit_stop": true,
+      "delayed_retry_keeps_container_stopped": true
+    }
+  },
+  "ui": {
+    "scope": "same release, isolated loopback development manager and native omarchy Agent",
+    "start_stop_logs": true,
+    "console_errors": 0
+  },
+  "caller_timeout_ms": 1,
+  "rust_tests_passed": 17,
+  "checks_run_on_release": true
+}

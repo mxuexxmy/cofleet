@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Heartbeat {
+    #[serde(default)]
+    pub docker: Option<crate::docker::DockerSnapshot>,
     pub device_id: uuid::Uuid,
     pub name: String,
     pub os: String,
@@ -34,6 +36,9 @@ pub struct AgentStatus {
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum LocalRequest {
     Status,
+    Docker {
+        request: crate::docker::DockerRequest,
+    },
     Pause,
     Resume,
     SetResourcePolicy {
@@ -43,6 +48,8 @@ pub enum LocalRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LocalResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docker: Option<crate::docker::DockerReply>,
     pub status: Option<AgentStatus>,
     pub error: Option<String>,
 }
@@ -73,6 +80,10 @@ impl Heartbeat {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentMessage {
+    DockerResult {
+        call_id: uuid::Uuid,
+        result: crate::docker::DockerReply,
+    },
     Hello {
         protocol_version: u32,
         state: Heartbeat,
@@ -89,6 +100,10 @@ pub enum AgentMessage {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HubMessage {
+    DockerCommand {
+        call_id: uuid::Uuid,
+        request: crate::docker::DockerRequest,
+    },
     Welcome {
         protocol_version: u32,
         session_id: uuid::Uuid,

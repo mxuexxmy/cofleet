@@ -28,6 +28,7 @@ struct Record {
     session: Option<Session>,
     last_report: Option<Uuid>,
     pending_reports: Vec<Uuid>,
+    pending_docker: HashMap<Uuid, tokio::sync::oneshot::Sender<crate::docker::DockerReply>>,
 }
 #[derive(Serialize)]
 pub struct Device {
@@ -82,6 +83,60 @@ impl Hub {
         record.pending_reports.push(request_id);
         Ok(request_id)
     }
+    pub async fn docker(
+        &self,
+        user: &str,
+        device: Uuid,
+        request: crate::docker::DockerRequest,
+    ) -> Result<crate::docker::DockerReply, axum::http::StatusCode> {
+        use axum::http::StatusCode;
+        let call_id = Uuid::new_v4();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        {
+            let mut records = self.records.write().await;
+            let record = records
+                .get_mut(&(user.into(), device))
+                .ok_or(StatusCode::NOT_FOUND)?;
+            let session = record.session.as_ref().ok_or(StatusCode::CONFLICT)?;
+            if record.state.docker.is_none() {
+                return Err(StatusCode::CONFLICT);
+            }
+            record.pending_docker.retain(|_, tx| !tx.is_closed());
+            if record.pending_docker.len() >= 8 {
+                return Err(StatusCode::TOO_MANY_REQUESTS);
+            }
+            session
+                .sender
+                .try_send(HubMessage::DockerCommand { call_id, request })
+                .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+            record.pending_docker.insert(call_id, tx);
+        }
+        let result = tokio::time::timeout(Duration::from_secs(12), rx).await;
+        if let Some(record) = self.records.write().await.get_mut(&(user.into(), device)) {
+            record.pending_docker.remove(&call_id);
+        }
+        match result {
+            Ok(Ok(reply)) => Ok(reply),
+            Ok(Err(_)) => Err(StatusCode::CONFLICT),
+            Err(_) => Err(StatusCode::GATEWAY_TIMEOUT),
+        }
+    }
+    async fn docker_result(
+        &self,
+        user: &str,
+        device: Uuid,
+        session: Uuid,
+        call_id: Uuid,
+        result: crate::docker::DockerReply,
+    ) {
+        let mut records = self.records.write().await;
+        if let Some(record) = records.get_mut(&(user.into(), device))
+            && record.session.as_ref().map(|s| s.id) == Some(session)
+            && let Some(tx) = record.pending_docker.remove(&call_id)
+        {
+            let _ = tx.send(result);
+        }
+    }
     async fn attach(
         &self,
         user: &str,
@@ -109,6 +164,7 @@ impl Hub {
                 session: Some(Session { id, sender }),
                 last_report: None,
                 pending_reports: Vec::new(),
+                pending_docker: HashMap::new(),
             },
         );
         Some(id)
@@ -143,6 +199,7 @@ impl Hub {
         {
             record.session = None;
             record.pending_reports.clear();
+            record.pending_docker.clear();
         }
     }
     pub async fn serve(self, user: String, mut socket: WebSocket) {
@@ -182,6 +239,10 @@ impl Hub {
                         match frame {
                             Message::Text(text) if text.len() <= MAX_FRAME_BYTES => {
                                 let Ok(message) = serde_json::from_str::<AgentMessage>(&text) else { break; };
+                                if let AgentMessage::DockerResult { call_id,result } = message {
+                                    self.docker_result(&user,device,session,call_id,result).await;
+                                    continue;
+                                }
                                 let (state, report) = match message {
                                     AgentMessage::Heartbeat { state } => (state,None),
                                     AgentMessage::Report { request_id, state } => (state,Some(request_id)),
@@ -229,6 +290,7 @@ mod tests {
     use super::*;
     fn state(id: Uuid) -> Heartbeat {
         Heartbeat {
+            docker: None,
             device_id: id,
             name: "node".into(),
             os: "linux".into(),
@@ -239,6 +301,47 @@ mod tests {
             resources: None,
             resource_policy: Default::default(),
         }
+    }
+    #[tokio::test]
+    async fn docker_results_are_scoped_to_owner_and_current_session() {
+        let hub = Hub::default();
+        let device = Uuid::new_v4();
+        let mut heartbeat = state(device);
+        heartbeat.docker = Some(Default::default());
+        let (tx, mut rx) = mpsc::channel(8);
+        let session = hub.attach("alice", heartbeat, tx).await.unwrap();
+        assert_eq!(
+            hub.docker("bob", device, crate::docker::DockerRequest::List)
+                .await
+                .unwrap_err(),
+            axum::http::StatusCode::NOT_FOUND
+        );
+        let other = hub.clone();
+        let call = tokio::spawn(async move {
+            other
+                .docker("alice", device, crate::docker::DockerRequest::List)
+                .await
+        });
+        let HubMessage::DockerCommand { call_id, .. } = rx.recv().await.unwrap() else {
+            panic!("expected command")
+        };
+        hub.docker_result("bob", device, session, call_id, Default::default())
+            .await;
+        hub.docker_result("alice", device, Uuid::new_v4(), call_id, Default::default())
+            .await;
+        assert!(!call.is_finished());
+        hub.docker_result(
+            "alice",
+            device,
+            session,
+            call_id,
+            crate::docker::DockerReply {
+                logs: Some("scoped".into()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(call.await.unwrap().unwrap().logs.as_deref(), Some("scoped"));
     }
     #[tokio::test]
     async fn rooms_are_isolated_and_old_disconnect_does_not_remove_new_session() {

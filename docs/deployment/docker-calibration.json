@@ -1,0 +1,89 @@
+{
+  "created_at": "2026-11-03T11:55:46+00:00",
+  "documents": [
+    {
+      "attempt_errors": [],
+      "bytes": 8914,
+      "content_type": "text/plain; charset=utf-8",
+      "local_file": "package.md",
+      "official_commit": null,
+      "requested_url": "https://gitee.com/lazycatcloud/lzc-developer-doc/raw/master/docs/spec/package.md",
+      "sha256": "464056bd9ba621e55ac8506c256a94ebad5b8d8f06752c156a8d27cce154cf14",
+      "source_kind": "raw",
+      "source_url": "https://raw.giteeusercontent.com/lazycatcloud/lzc-developer-doc/raw/master/docs/spec/package.md?signature=cH8TOKeD2UMdEJeWQFhL7fpoX6i9Dhir21w1giFFtmDm86IP3uzDXlpva3f50odT_1FDLrpUBxK7WfdynM020rvXZ4kGSisF3_haUdz7ijGbhmz4j-XBko-iZ62BqjlmHWfVGJsLR7EPc8FYHafKE9-a281llWhw-obAtnfwhB8vxDKvUnJWL85RnR_jObfhd-7MW_rHX0KoDJ2_6smCS5aUWe0fP4R5Ub7_fxNxgBS63sIT1rHzu8O4lLKx2kZAwHKaUT4sLBK2M5j6xLmLSUwOz1ObuNBSuA3YBHl7fLFuqc3k",
+      "status": "downloaded",
+      "title": "package.yml",
+      "topic": "package"
+    },
+    {
+      "attempt_errors": [],
+      "bytes": 16331,
+      "content_type": "text/plain; charset=utf-8",
+      "local_file": "manifest.md",
+      "official_commit": null,
+      "requested_url": "https://gitee.com/lazycatcloud/lzc-developer-doc/raw/master/docs/spec/manifest.md",
+      "sha256": "7d5ba18a72ad78aebd08caba9a8604b0c3ab8b0a19740c4f654e6ecc2190faa9",
+      "source_kind": "raw",
+      "source_url": "https://raw.giteeusercontent.com/lazycatcloud/lzc-developer-doc/raw/master/docs/spec/manifest.md?signature=p55YUfSbVhrYX5It0IG7UfRxg2TINI2zSXLHNyE_7y8ST49UzqNYqgV7BukLn8D6l3aOWCEuwkqSe4nGaHtpC4AdkriI4xkza7w2_EEL8j4vjmigg6zuTAaX6js6nuD_-wkVrQuqtcGuDrSX177Yd8g_s88sEvcPu0PGawT5FHFN_766YipcK_vSE9GTXLQ5f9mNsXfqHNYcvSFl1s_oqLHUZz_j4UCltOL4q1bB8PS9LTvoNfI_gEukdKlPryZLKgnzqzLOafD1vaoSW_eRve6rjn63mJNXCnXw2xwCAu9XQwsmrQ%3D%3D",
+      "status": "downloaded",
+      "title": "lzc-manifest.yml",
+      "topic": "manifest"
+    },
+    {
+      "attempt_errors": [],
+      "bytes": 9833,
+      "content_type": "text/plain; charset=utf-8",
+      "local_file": "build.md",
+      "official_commit": null,
+      "requested_url": "https://gitee.com/lazycatcloud/lzc-developer-doc/raw/master/docs/spec/build.md",
+      "sha256": "7a2ab47c85f7679e9c113e94e2c917a4e1a28c952f05c32995493f756505fbba",
+      "source_kind": "raw",
+      "source_url": "https://raw.giteeusercontent.com/lazycatcloud/lzc-developer-doc/raw/master/docs/spec/build.md?signature=d7DwGF_DbFb1dgC95UYiEKx0LMvPSirhr66ulGrnkeg-YdxzjYuhygYkDDCT_WY7bRT0VB5zaI18nQvO-kfInDvJh3Gc8YPd4QZKpXBzpW7vZ71VfWkvS-FRrIXRNidqu4qDYqrvRuobJOrvDu0yU0uUSqnhu_o516ksKet63wtoIwf-6LoCJ1QxJOschV_z9dn61dMoNI-0ByNmeBntkGO59p4NlQN07qBrm_YcDgdQamqexETfJqLpvjYECcevuD3Qp5twG_jDW_-rYbbTmuKkjncj4vZslw1MSLhgf5SAPQ%3D%3D",
+      "status": "downloaded",
+      "title": "lzc-build.yml",
+      "topic": "build"
+    },
+    {
+      "attempt_errors": [],
+      "bytes": 1089,
+      "content_type": "text/plain; charset=utf-8",
+      "local_file": "deploy-params.md",
+      "official_commit": null,
+      "requested_url": "https://gitee.com/lazycatcloud/lzc-developer-doc/raw/master/docs/spec/deploy-params.md",
+      "sha256": "8992f0cf0fdc102b0aef29a01226e33a71604add082a22b188895bcfa732bd0e",
+      "source_kind": "raw",
+      "source_url": "https://raw.giteeusercontent.com/lazycatcloud/lzc-developer-doc/raw/master/docs/spec/deploy-params.md?signature=TRgX0BqeE6kC-XStR2WfSEuhiI6HougaLmwzq2YexubfJYfJZzifuNbwtXOm5SYALCX5nUADM_WHSfaesX1Sn9af433_P8xyZ2NT0597WWEKmt1943nSURUs3tPsSzkAC6SSWcmWOwhQ65vGyi6kMoVfHhKheZDvFsNG22SuhVlm5D3fiiaTdAGvNTRmxfhOCBidvgYGFxmXMtAHXSP5rSMkLXAH_X6iDoR4cA-3IqKkFLqd52JODdABYFPbhIt0Hze4J5sPUBLMlWLJJhkdnMpXD8g9a1KnsrDudPmeZ7apF0PO7V18R-02",
+      "status": "downloaded",
+      "title": "lzc-deploy-params.yml",
+      "topic": "deploy-params"
+    },
+    {
+      "attempt_errors": [],
+      "bytes": 3990,
+      "content_type": "text/plain; charset=utf-8",
+      "local_file": "lpk-format.md",
+      "official_commit": null,
+      "requested_url": "https://gitee.com/lazycatcloud/lzc-developer-doc/raw/master/docs/spec/lpk-format.md",
+      "sha256": "4fc5d4101a96b8364fe9708ae058585ab32b9a5d5a4b8c319c76b6761665955a",
+      "source_kind": "raw",
+      "source_url": "https://raw.giteeusercontent.com/lazycatcloud/lzc-developer-doc/raw/master/docs/spec/lpk-format.md?signature=8lSvPq1BolaAp2JR4z4WZVzo1bIhBgzttGsWgDFBn_TecEeS2_6uOhyCHzBXSvriMd-4J0MX6djhaCzV5kVhlC2yW2WYqOSDm2EVS6CnKUMRhA3tQNkn7v5DMWkOsA7OJODYbxbBTjAJtwkucYs9mBZRUN1DcpmwUD_kPpRAHwK6xu5rZfKVr7mWHVstT6FlHSlYB3TTNH190bJDQov4ExFh1Ooy3GK0qAqIYWViXOQGYcxLx2Oa6S5u_SArrCQRM7NVtkiWjIPVplVleYtbr65EcCuwjLapdkKJC3LeLshzycnMq3La",
+      "status": "downloaded",
+      "title": "LPK 包格式",
+      "topic": "lpk-format"
+    }
+  ],
+  "repository": "https://gitee.com/lazycatcloud/lzc-developer-doc",
+  "requested_official_commit": null,
+  "result": "success",
+  "schema_version": 1,
+  "source_policy": [
+    "gitee-raw",
+    "developer-site",
+    "aipod-official-site-only",
+    "explicit-offline-declaration"
+  ],
+  "target_versions": {
+    "lzc_cli": "2.0.9",
+    "lzcos": "1.6.2+fix.4"
+  }
+}

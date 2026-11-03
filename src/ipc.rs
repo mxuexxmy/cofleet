@@ -12,9 +12,15 @@ pub type Stream = Box<dyn Io>;
 const LIMIT: u64 = 16 * 1024;
 
 pub async fn read_json<T: serde::de::DeserializeOwned>(stream: &mut Stream) -> Result<T> {
+    read_json_timeout(stream, 3).await
+}
+async fn read_json_timeout<T: serde::de::DeserializeOwned>(
+    stream: &mut Stream,
+    seconds: u64,
+) -> Result<T> {
     let mut bytes = Vec::new();
     let count = tokio::time::timeout(
-        Duration::from_secs(3),
+        Duration::from_secs(seconds),
         BufReader::new(stream.take(LIMIT + 1)).read_until(b'\n', &mut bytes),
     )
     .await??;
@@ -38,7 +44,7 @@ pub async fn request(dir: &Path, command: LocalRequest) -> Result<LocalResponse>
         .await
         .context("cannot connect to Agent; is it running?")?;
     write_json(&mut stream, &command).await?;
-    read_json(&mut stream).await
+    read_json_timeout(&mut stream, 90).await
 }
 
 #[cfg(unix)]

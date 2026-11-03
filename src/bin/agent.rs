@@ -23,11 +23,15 @@ use tokio_tungstenite::{
 struct Args {
     #[arg(long, default_value_os_t = data_dir())]
     data_dir: PathBuf,
+    /// Enable the fixed test workload on the native local Linux Docker engine
+    #[arg(long)]
+    docker: bool,
 }
 struct State {
     config: Config,
     status: AgentStatus,
     monitor: ResourceMonitor,
+    docker: Option<cofleet::docker::DockerController>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -47,12 +51,32 @@ async fn main() -> Result<()> {
             resources: None,
             resource_policy: config.resource_policy.clone(),
         },
+        docker: if args.docker {
+            Some(cofleet::docker::DockerController::open(
+                &args.data_dir,
+                config.device_id,
+            )?)
+        } else {
+            None
+        },
         config,
         monitor: ResourceMonitor::start(args.data_dir.clone())?,
     }));
     let notify = Arc::new(Notify::new());
+    let docker_worker = state.lock().await.docker.clone().map(|docker| {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            loop {
+                interval.tick().await;
+                docker.reconcile().await;
+            }
+        })
+    });
     let heartbeat = tokio::spawn(heartbeat_loop(state.clone(), notify.clone()));
-    eprintln!("Agent started; no task execution is enabled in this prototype");
+    eprintln!(
+        "Agent started; fixed Docker test workload enabled: {}",
+        args.docker
+    );
     let slots = Arc::new(tokio::sync::Semaphore::new(16));
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
@@ -66,6 +90,14 @@ async fn main() -> Result<()> {
                     let _permit = permit;
                     let result: Result<()> = async {
                         let command: LocalRequest = ipc::read_json(&mut stream).await?;
+                        if let LocalRequest::Docker { request } = command {
+                            let (docker, accepting) = { let state=state.lock().await; (state.docker.clone(),state.config.accepting_tasks) };
+                            let reply = match docker {
+                                Some(docker) => docker.execute(request, accepting).await,
+                                None => cofleet::docker::DockerReply { error: Some("Docker management disabled; restart Agent with --docker".into()), ..Default::default() },
+                            };
+                            return ipc::write_json(&mut stream, &LocalResponse { docker:Some(reply), status:None, error:None }).await;
+                        }
                         let mut state = state.lock().await;
                         let mut next = state.config.clone();
                         let changing = match command {
@@ -73,6 +105,7 @@ async fn main() -> Result<()> {
                             LocalRequest::Resume => { next.accepting_tasks = true; true },
                             LocalRequest::SetResourcePolicy { policy } => { next.resource_policy = policy; true },
                             LocalRequest::Status => false,
+                            LocalRequest::Docker { .. } => unreachable!(),
                         };
                         let mut error = None;
                         if changing {
@@ -92,7 +125,7 @@ async fn main() -> Result<()> {
                             }
                         }
                         state.status.resources = state.monitor.snapshot();
-                        let response = LocalResponse { status: Some(state.status.clone()), error };
+                        let response = LocalResponse { docker: None, status: Some(state.status.clone()), error };
                         drop(state);
                         ipc::write_json(&mut stream, &response).await
                     }.await;
@@ -103,6 +136,9 @@ async fn main() -> Result<()> {
         }
     }
     heartbeat.abort();
+    if let Some(worker) = docker_worker {
+        worker.abort();
+    }
     eprintln!("Agent stopped");
     Ok(())
 }
@@ -112,6 +148,7 @@ type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 fn heartbeat(state: &State) -> Heartbeat {
     let config = &state.config;
     Heartbeat {
+        docker: state.docker.as_ref().map(|d| d.snapshot()),
         device_id: config.device_id,
         name: config.name.clone(),
         os: std::env::consts::OS.into(),
@@ -233,13 +270,30 @@ async fn control_session(
     let idle_secs = (config.heartbeat_secs * 3).max(15);
     let idle = tokio::time::sleep(Duration::from_secs(idle_secs));
     tokio::pin!(idle);
+    let (docker_tx, mut docker_rx) = tokio::sync::mpsc::channel(8);
+    let docker_slots = Arc::new(tokio::sync::Semaphore::new(8));
     loop {
         let message = tokio::select! {
+            Some((call_id, result)) = docker_rx.recv() => AgentMessage::DockerResult { call_id, result },
             frame = stream.next() => {
                 let Some(frame) = frame else { return Ok(()); };
                 match frame? {
                     Message::Text(text) => match serde_json::from_str::<HubMessage>(&text)? {
                         HubMessage::Ack { .. } => { mark_success(&state).await; idle.as_mut().reset(tokio::time::Instant::now()+Duration::from_secs(idle_secs)); continue; },
+                        HubMessage::DockerCommand { call_id, request } => {
+                            let permit = docker_slots.clone().try_acquire_owned()?;
+                            let tx = docker_tx.clone();
+                            let (docker, accepting) = { let state=state.lock().await; (state.docker.clone(),state.config.accepting_tasks) };
+                            tokio::spawn(async move {
+                                let _permit=permit;
+                                let result=match docker {
+                                    Some(docker) => docker.execute(request, accepting).await,
+                                    None => cofleet::docker::DockerReply { error: Some("Docker management disabled; restart Agent with --docker".into()), ..Default::default() },
+                                };
+                                let _=tx.send((call_id,result)).await;
+                            });
+                            continue;
+                        },
                         HubMessage::RequestReport { request_id } => AgentMessage::Report { request_id, state: heartbeat(&*state.lock().await) },
                         _ => anyhow::bail!("unexpected hub message"),
                     },

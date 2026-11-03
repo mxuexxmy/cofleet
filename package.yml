@@ -1,7 +1,7 @@
 package: xyz.mxue.lzc.app.cofleet
-version: "0.2.0"
+version: "0.3.0"
 name: 聚机验证版
-description: CoFleet 设备连接与控制中枢验证版（x86_64，不执行任务）
+description: CoFleet 设备资源与受管测试容器验证版（x86_64）
 min_os_version: "1.6.0"
 permissions:
   required: []
@@ -9,7 +9,7 @@ permissions:
 locales:
   zh-CN:
     name: 聚机验证版
-    description: 设备连接与控制中枢验证版（x86_64，不执行任务）
+    description: 设备资源与受管测试容器验证版（x86_64）
   en-US:
     name: CoFleet Test
-    description: Device connectivity and control hub prototype
+    description: Device monitoring and managed test container prototype

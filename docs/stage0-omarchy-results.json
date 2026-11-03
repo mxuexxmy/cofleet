@@ -1,0 +1,67 @@
+{
+  "date": "2026-11-03",
+  "timezone": "Asia/Shanghai",
+  "scope": "native omarchy to deployed LC02 application; temporary diagnostic service",
+  "gateway": {
+    "baseline": {
+      "agent_status_read": true,
+      "challenge_verified": true,
+      "device_token_obtained": true,
+      "gateway_callback": true,
+      "ownership_verified": true,
+      "verified_tls": true
+    },
+    "probe-secret-only": {
+      "agent_status_read": true,
+      "challenge_verified": true,
+      "device_token_obtained": true,
+      "gateway_callback": true,
+      "ownership_verified": true,
+      "verified_tls": true
+    },
+    "platform-token-only": {
+      "credential_rejected": true,
+      "status": 403
+    },
+    "anonymous": {
+      "status": 403,
+      "unauthorized_rejected": true
+    },
+    "wrong-platform-token": {
+      "status": 403,
+      "unauthorized_rejected": true
+    },
+    "wrong-probe-secret": {
+      "status": 403,
+      "unauthorized_rejected": true
+    },
+    "foreign-owner": {
+      "ownership_rejected": true
+    }
+  },
+  "faults": {
+    "disconnect_observed": true,
+    "disconnect_restored": true,
+    "core_pid_changed": true,
+    "core_restart_recovered": true,
+    "different_box_account_disconnected": true,
+    "account_context_restored": true
+  },
+  "post_restart_callback": {
+    "baseline": {
+      "agent_status_read": true,
+      "challenge_verified": true,
+      "device_token_obtained": true,
+      "gateway_callback": true,
+      "ownership_verified": true,
+      "verified_tls": true
+    }
+  },
+  "limitations": [
+    "WSL2 deferred",
+    "other computers not fully tested",
+    "account context switch across two microservers; same-microserver user switch untested",
+    "HTTP device token is not mandatory when correct probe secret is supplied",
+    "temporary diagnostic path, not integrated product runtime"
+  ]
+}

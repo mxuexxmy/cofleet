@@ -11,3 +11,5 @@ pub mod hub;
 pub mod lazycat;
 
 pub mod resources;
+
+pub mod docker;

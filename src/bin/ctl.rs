@@ -30,6 +30,11 @@ enum Command {
         #[arg(long, default_value_t = 5)]
         heartbeat_secs: u64,
     },
+    /// View containers, set test workload intent, or read its bounded logs
+    Docker {
+        #[command(subcommand)]
+        command: DockerCommand,
+    },
     Status,
     Pause,
     Resume,
@@ -42,6 +47,19 @@ enum Command {
     },
     /// 显示配置路径，不输出凭据；修改连接设置后重启 Agent
     ConfigPath,
+}
+#[derive(Subcommand)]
+enum DockerCommand {
+    List,
+    Start {
+        #[arg(long)]
+        request_id: uuid::Uuid,
+    },
+    Stop {
+        #[arg(long)]
+        request_id: uuid::Uuid,
+    },
+    Logs,
 }
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
@@ -79,6 +97,24 @@ async fn main() -> Result<()> {
         Command::ConfigPath => println!("{}", args.data_dir.join("agent.toml").display()),
         command => {
             let command = match command {
+                Command::Docker { command } => LocalRequest::Docker {
+                    request: match command {
+                        DockerCommand::List => cofleet::docker::DockerRequest::List,
+                        DockerCommand::Start { request_id } => {
+                            cofleet::docker::DockerRequest::SetTest {
+                                request_id,
+                                running: true,
+                            }
+                        }
+                        DockerCommand::Stop { request_id } => {
+                            cofleet::docker::DockerRequest::SetTest {
+                                request_id,
+                                running: false,
+                            }
+                        }
+                        DockerCommand::Logs => cofleet::docker::DockerRequest::TestLogs,
+                    },
+                },
                 Command::Status => LocalRequest::Status,
                 Command::Pause => LocalRequest::Pause,
                 Command::Resume => LocalRequest::Resume,
@@ -97,7 +133,14 @@ async fn main() -> Result<()> {
             if let Some(error) = response.error {
                 bail!("{error}");
             }
-            println!("{}", serde_json::to_string_pretty(&response.status)?);
+            if let Some(docker) = response.docker {
+                println!("{}", serde_json::to_string_pretty(&docker)?);
+                if docker.error.is_some() {
+                    bail!("Docker request failed; see result above");
+                }
+            } else {
+                println!("{}", serde_json::to_string_pretty(&response.status)?);
+            }
         }
     }
     Ok(())

@@ -2,6 +2,8 @@
 const $ = selector => document.querySelector(selector);
 let token = '', platformLogin = false, devices = [], selectedId = null, fresh = false;
 let generation = 0, controller = null, lastRefresh = null;
+const dockerViews = new Map();
+let dockerEpoch = 0;
 const osNames = { linux: 'Linux', windows: 'Windows', macos: 'macOS' };
 
 function el(tag, className, text) {
@@ -112,6 +114,81 @@ function renderDetails(device) {
   pair(info, '设备 ID', device.device_id);
   pair(info, '资源采集时间', resources ? new Date(resources.sampled_at_unix * 1000).toLocaleString('zh-CN') : '—');
   area.append(info);
+  renderDocker(area, device);
+}
+function renderDocker(area, device) {
+  const section = el('section', 'docker-section');
+  const head = el('div', 'section-head');
+  head.append(el('h3', '', 'Docker 容器'), el('span', 'section-note', '原生 Linux · 固定测试负载'));
+  section.append(head); area.append(section);
+  const docker = device.docker;
+  if (!docker) {
+    section.append(el('p', '', '未启用 Docker 管理。请在电脑上使用 --docker 启动新版 Agent。'));
+    return;
+  }
+  let view = dockerViews.get(device.device_id);
+  if (!view) { view = { busy: false, pending: null, logs: null, message: '' }; dockerViews.set(device.device_id, view); }
+  section.append(el('p', 'policy-tip', '测试容器：Alpine 3.22，32 MiB 内存、0.25 CPU，无网络和宿主目录挂载。其他容器仅展示。'));
+  section.append(el('p', '', '期望状态：' + (docker.desired_running ? '运行' : '停止') + ' · 第 ' + docker.generation + ' 次变更 · 采集于 ' + (docker.sampled_at_unix ? new Date(docker.sampled_at_unix * 1000).toLocaleTimeString('zh-CN') : '等待采集')));
+  if (docker.error) section.append(el('p', 'resource-warning', docker.error));
+  const actions = el('div', 'docker-actions');
+  for (const [label, running] of [['启动测试容器', true], ['停止测试容器', false]]) {
+    const retry = view.pending?.running === running;
+    const button = el('button', running ? '' : 'secondary', retry ? '重试' + label : label);
+    button.type = 'button';
+    button.disabled = view.busy || !fresh || !device.online || (running && !device.accepting_tasks && !retry);
+    button.onclick = () => {
+      if (!retry) view.pending = { action: 'set_test', request_id: crypto.randomUUID(), running };
+      dockerCall(device.device_id, view.pending);
+    };
+    actions.append(button);
+  }
+  for (const [label, action] of [['刷新容器', 'list'], ['读取测试日志', 'test_logs']]) {
+    const button = el('button', 'quiet', label); button.type = 'button';
+    button.disabled = view.busy || !fresh || !device.online;
+    button.onclick = () => dockerCall(device.device_id, { action }); actions.append(button);
+  }
+  section.append(actions);
+  if (view.message) { const note = el('p', 'policy-tip', view.message); note.setAttribute('role', 'status'); section.append(note); }
+  if (view.pending) section.append(el('p', 'policy-tip', '请求 ID：' + view.pending.request_id + '。若超时，请使用重试按钮查询并恢复同一次操作。'));
+  const table = el('div', 'container-list');
+  for (const container of docker.containers) {
+    const row = el('div', 'container-row');
+    row.append(el('strong', '', container.name), el('span', '', container.state + (container.managed ? ' · 受管测试容器' : ' · 只读')), el('code', '', container.image));
+    table.append(row);
+  }
+  if (!docker.containers.length) table.append(el('p', '', '当前未发现容器。'));
+  section.append(table);
+  if (docker.truncated) section.append(el('p', 'policy-tip', '仅展示前 32 个容器。'));
+  if (view.logs !== null) { const logs = el('pre', 'container-logs', view.logs || '暂无日志。'); logs.setAttribute('aria-label', '测试容器最近日志'); section.append(logs); }
+}
+async function dockerCall(deviceId, request) {
+  const view = dockerViews.get(deviceId), epoch = dockerEpoch;
+  if (!view || view.busy) return;
+  view.busy = true; view.message = '正在请求电脑…'; render();
+  const abort = new AbortController(), timeout = setTimeout(() => abort.abort(), 15000);
+  try {
+    const response = await fetch('api/v1/devices/' + deviceId + '/docker', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CoFleet-Request': '1', ...(platformLogin ? {} : { Authorization: 'Bearer ' + token }) },
+      body: JSON.stringify(request), signal: abort.signal, redirect: 'error'
+    });
+    if (!response.ok) throw new Error(response.status === 504 ? '操作结果尚未确认，请用相同请求 ID 重试。' : '请求失败（' + response.status + '），请检查登录、设备连接和 Docker 状态。');
+    const reply = await response.json();
+    if (epoch !== dockerEpoch) return;
+    const device = devices.find(d => d.device_id === deviceId);
+    if (device && reply.snapshot) device.docker = reply.snapshot;
+    if (reply.logs !== null && reply.logs !== undefined) view.logs = reply.logs;
+    if (reply.error) { view.message = reply.error + '；可用相同请求 ID 重试。'; }
+    else {
+      if (request.action === 'set_test') view.pending = null;
+      view.message = reply.duplicate ? '该请求已处理，已核对当前期望状态。' : '已完成。';
+    }
+  } catch (error) {
+    if (epoch === dockerEpoch) view.message = error.name === 'AbortError' ? '等待超时，操作可能已经执行。请用相同请求 ID 重试。' : error.message;
+  } finally {
+    clearTimeout(timeout);
+    if (epoch === dockerEpoch) { view.busy = false; render(); }
+  }
 }
 function render() {
   const query = $('#search').value.trim().toLocaleLowerCase();
@@ -168,11 +245,13 @@ async function refresh() {
   }
 }
 $('#login').onsubmit = event => {
+  dockerEpoch++; dockerViews.clear();
   event.preventDefault(); token = $('#token').value; $('#token').value = '';
   devices = []; selectedId = null; fresh = false; lastRefresh = null;
   $('#logout').hidden = false; render(); refresh();
 };
 $('#logout').onclick = () => {
+  dockerEpoch++; dockerViews.clear();
   generation++; controller?.abort(); token = ''; devices = []; fresh = false; selectedId = null; lastRefresh = null;
   $('#login-panel').hidden = false; $('#logout').hidden = true; $('#refresh').disabled = true;
   setConnection('已断开'); setNotice('凭据已从页面内存清除。'); render();

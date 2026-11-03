@@ -69,6 +69,24 @@ async fn refresh(
         Json(serde_json::json!({ "request_id":request_id })),
     ))
 }
+async fn docker_command(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(device): Path<uuid::Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<cofleet::docker::DockerRequest>,
+) -> Result<Json<cofleet::docker::DockerReply>, StatusCode> {
+    // JSON + a custom header prevents cross-site form submissions; no CORS is enabled.
+    if headers
+        .get("x-cofleet-request")
+        .and_then(|v| v.to_str().ok())
+        != Some("1")
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let user = app.auth.identify(&headers, peer.ip())?;
+    Ok(Json(app.hub.docker(&user, device, request).await?))
+}
 async fn ws(
     State(app): State<App>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -185,6 +203,7 @@ async fn main() -> Result<()> {
         .route("/api/ws", get(ws))
         .route("/api/v1/devices", get(devices))
         .route("/api/v1/devices/{device}/refresh", post(refresh))
+        .route("/api/v1/devices/{device}/docker", post(docker_command))
         .layer(DefaultBodyLimit::max(4096))
         .with_state(app);
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
