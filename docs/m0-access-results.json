@@ -1,0 +1,75 @@
+{
+  "recorded_date": "2026-11-04",
+  "target_versions": {
+    "lzcos": "1.6.2+fix.4",
+    "lzc_cli": "2.0.9"
+  },
+  "formal_access_gate": "blocked",
+  "server_verification": {
+    "stage": "M0",
+    "checks": {
+      "exec_route_preserves_host": true,
+      "static_independent_origin": true,
+      "application_headers_and_secret_filter": true,
+      "anonymous_spoofed_identity_and_invalid_login_rejected": true,
+      "unknown_prefix_rejected": true,
+      "management_host_and_origin_isolation": true,
+      "multiple_host_only_cookies_and_reserved_names": true,
+      "redirect_mapping_and_invalid_private_redirect": true,
+      "unsupported_application_path_reported": true,
+      "application_login_session": true,
+      "application_api_namespace_preserved": true,
+      "authenticated_websocket_echo": true,
+      "websocket_login_and_origin_rejection": true,
+      "self_signed_upstream_certificate_rejected": true,
+      "node_session_disconnect_closes_active_stream": true,
+      "disconnected_node_rejected": true
+    },
+    "real_platform_accounts_tested": 1,
+    "limitations": [
+      "No second real platform account was available; owner rejection is separately unit-tested at the trusted boundary.",
+      "Removing or invalidating the client cookie was tested; no real platform logout/revocation was triggered for the existing user.",
+      "Services are disposable fixed-port fixtures; no generic container discovery or persisted endpoints are implemented."
+    ]
+  },
+  "browser_verification": {
+    "stage": "M0-browser",
+    "strict_cookie_isolation_passed": false,
+    "findings": [
+      "Application JavaScript can set a parent-domain cookie visible to the management origin; response Set-Cookie filtering does not prevent this."
+    ],
+    "checks": {
+      "application_login_form": true,
+      "application_cookie_session": true,
+      "websocket_after_login": true,
+      "host_only_application_session_not_sent_to_other_origin": true,
+      "host_only_set_cookie": true,
+      "platform_cookie_not_overwritten": true,
+      "cross_origin_management_read_blocked": true,
+      "management_path_on_application_host_rejected": true,
+      "removed_browser_login_cookie_blocks_new_http_and_ws": true
+    },
+    "limitations": [
+      "Cookie removal only: real platform session revocation and a second real account were not tested."
+    ]
+  },
+  "resource_snapshot": {
+    "CPUPerc": "0.01%",
+    "MemUsage": "18.04MiB / 31.12GiB",
+    "MemPerc": "0.06%",
+    "NetIO": "84.6kB / 46.4kB",
+    "PIDs": "23"
+  },
+  "pending_real_checks": [
+    "Second authenticated platform account (deferred by user)",
+    "Actual platform session revocation/logout; only cookie absence/invalidity was tested"
+  ],
+  "blocking_finding": "JavaScript on an application origin can set a parent-domain cookie visible at the management origin.",
+  "cleanup_verification": {
+    "temporary_package_removed": true,
+    "temporary_container_removed": true,
+    "production_online_devices_retained": 2,
+    "production_plans_retained": true,
+    "production_configuration_and_release_ids_retained": true
+  }
+}

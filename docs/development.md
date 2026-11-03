@@ -151,3 +151,10 @@ Agent 每 5 秒采集一次 CPU 总使用率、逻辑线程数、总内存与可
 ## 0.6.0 多节点协作与 Windows Agent
 
 管理页和 `/api/v1/workloads` 提供按物理主机去重的资源调度，支持数据位置、GPU、长期在线偏好及按负载类型选择等待、重试或重建。Windows SCM 构建安装、节点能力配置和实机待验收项见 [阶段 4 文档](stage4-multinode.md)。
+
+
+## 可选 M0 入口验证工具
+
+使用 `access-probe` feature 单独构建 `cofleet-access-probe`，不会加入正常管理端或 Agent 构建，也不改动当前生产路由。实验会创建可清理的临时微服包与本机测试容器，完整运行及清理要求见 [工具说明](../tools/m0/README.md)。
+
+当前 M0 的兼容性检查通过，但父域 Cookie 隔离门槛失败；浏览器脚本默认收集结果，设置 `M0_REQUIRE_STRICT_ISOLATION=1` 可让门槛失败返回非零退出码。不要把脚本完成或单账号通过等同于正式统一访问已经验收，见 [M0 实测与待补项](m0-access.md)。

@@ -348,10 +348,12 @@ dependencies = [
  "tao",
  "tar",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite",
  "toml 0.9.12+spec-1.1.0",
  "tray-icon",
  "uuid",
+ "webpki-roots 1.0.11",
  "windows-service",
  "windows-sys 0.61.2",
 ]
