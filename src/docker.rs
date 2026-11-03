@@ -338,9 +338,15 @@ fn persist(dir: &Path, desired: &Desired) -> Result<()> {
     result.context("Docker desired state persistence failed")
 }
 pub(crate) async fn docker(args: &[&str]) -> Result<String> {
-    // Ignore remote contexts/DOCKER_HOST. This feature targets the native local Linux engine.
+    // Ignore remote contexts/DOCKER_HOST. Only a fixed local engine endpoint is allowed.
+    #[cfg(target_os = "linux")]
+    const LOCAL_DOCKER_HOST: &str = "unix:///var/run/docker.sock";
+    #[cfg(target_os = "windows")]
+    const LOCAL_DOCKER_HOST: &str = "npipe:////./pipe/dockerDesktopLinuxEngine";
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    const LOCAL_DOCKER_HOST: &str = "unix:///var/run/docker.sock";
     let mut child = Command::new("docker")
-        .args(["--host", "unix:///var/run/docker.sock"])
+        .args(["--host", LOCAL_DOCKER_HOST])
         .args(args)
         .env_remove("DOCKER_CONTEXT")
         .env_remove("DOCKER_HOST")

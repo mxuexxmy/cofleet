@@ -43,7 +43,7 @@ $env:COFLEET_TOKEN = '<至少 16 字符的开发凭据>'
 需要读取当前桌面用户懒猫登录时，使用 `install-user-startup.ps1` 注册当前用户登录启动的 Agent 和托盘，不安装 LocalSystem 服务：
 
 ```powershell
-.\install-user-startup.ps1 -AgentExe .\cofleet-agent.exe -TrayExe .\cofleet-tray.exe
+.\install-user-startup.ps1 -AgentExe .\cofleet-agent.exe -TrayExe .\cofleet-tray.exe -Docker
 ```
 
 配置调度能力（管理员 PowerShell）：
