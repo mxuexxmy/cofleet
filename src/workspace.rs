@@ -101,6 +101,18 @@ impl WorkspaceController {
             port: Default::default(),
         })
     }
+    pub async fn source_container(&self) -> Result<String> {
+        let inner = self.inner.lock().await;
+        let owned = inner
+            .owned()
+            .await?
+            .context("workspace unavailable for snapshot")?;
+        ensure!(
+            owned.state == "running",
+            "workspace must be running for snapshot"
+        );
+        Ok(owned.id)
+    }
     pub fn snapshot(&self) -> WorkspaceSnapshot {
         self.snapshot.read().unwrap().clone()
     }

@@ -29,6 +29,9 @@ struct Args {
     /// Approve one local immutable development workspace image (enables remote IDE shell in its container)
     #[arg(long, requires = "docker")]
     workspace_image: Option<String>,
+    /// Enable trusted-project Docker builds and stateless application releases
+    #[arg(long, requires = "workspace_image")]
+    build_deploy: bool,
 }
 struct State {
     config: Config,
@@ -36,6 +39,7 @@ struct State {
     monitor: ResourceMonitor,
     docker: Option<cofleet::docker::DockerController>,
     workspace: Option<cofleet::workspace::WorkspaceController>,
+    pipeline: Option<cofleet::pipeline::PipelineController>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -44,6 +48,7 @@ async fn main() -> Result<()> {
     let config = Config::load(&args.data_dir)?;
     let mut listener = ipc::Listener::bind(&args.data_dir, &config)?;
     let state = Arc::new(Mutex::new(State {
+        pipeline: None,
         status: AgentStatus {
             device_id: config.device_id,
             name: config.name.clone(),
@@ -77,6 +82,25 @@ async fn main() -> Result<()> {
         config,
         monitor: ResourceMonitor::start(args.data_dir.clone())?,
     }));
+    if args.build_deploy {
+        let mut s = state.lock().await;
+        let workspace = s.workspace.clone().unwrap();
+        s.pipeline = Some(cofleet::pipeline::PipelineController::open(
+            &args.data_dir,
+            s.config.device_id,
+            workspace,
+        )?);
+    }
+    let pipeline_monitor = state.lock().await.pipeline.clone().map(|p| {
+        tokio::spawn(async move {
+            p.monitor().await;
+        })
+    });
+    let pipeline_worker = state.lock().await.pipeline.clone().map(|p| {
+        tokio::spawn(async move {
+            p.worker().await;
+        })
+    });
     let notify = Arc::new(Notify::new());
     let docker_worker = state.lock().await.docker.clone().map(|docker| {
         tokio::spawn(async move {
@@ -162,6 +186,12 @@ async fn main() -> Result<()> {
     if let Some(worker) = workspace_worker {
         worker.abort();
     }
+    if let Some(worker) = pipeline_monitor {
+        worker.abort();
+    }
+    if let Some(worker) = pipeline_worker {
+        worker.abort();
+    }
     eprintln!("Agent stopped");
     Ok(())
 }
@@ -170,14 +200,24 @@ async fn execute_request(
     state: &Arc<Mutex<State>>,
     request: cofleet::docker::DockerRequest,
 ) -> cofleet::docker::DockerReply {
-    let (docker, workspace, accepting) = {
+    let (docker, workspace, pipeline, accepting) = {
         let state = state.lock().await;
         (
             state.docker.clone(),
             state.workspace.clone(),
+            state.pipeline.clone(),
             state.config.accepting_tasks,
         )
     };
+    if let cofleet::docker::DockerRequest::Pipeline { request } = request {
+        return match pipeline {
+            Some(pipeline) => pipeline.execute(request, accepting).await,
+            None => cofleet::docker::DockerReply {
+                error: Some("build/deploy disabled; restart Agent with --build-deploy".into()),
+                ..Default::default()
+            },
+        };
+    }
     if let cofleet::docker::DockerRequest::Workspace { request } = request {
         return match workspace {
             Some(workspace) => workspace.execute(request, accepting).await,
@@ -204,6 +244,7 @@ type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 fn heartbeat(state: &State) -> Heartbeat {
     let config = &state.config;
     Heartbeat {
+        pipeline: state.pipeline.as_ref().map(|p| p.snapshot()),
         docker: state.docker.as_ref().map(|d| d.snapshot()),
         workspace: state.workspace.as_ref().map(|w| w.snapshot()),
         device_id: config.device_id,
@@ -337,8 +378,9 @@ async fn control_session(
                 match frame? {
                     Message::Text(text) => match serde_json::from_str::<HubMessage>(&text)? {
                         HubMessage::Ack { .. } => { mark_success(&state).await; idle.as_mut().reset(tokio::time::Instant::now()+Duration::from_secs(idle_secs)); continue; },
-                        HubMessage::WorkspaceTunnel {tunnel_id}=>{
-                            let Some(port)=state.lock().await.workspace.as_ref().and_then(|w|w.port()) else {continue};
+                        HubMessage::WorkspaceTunnel {tunnel_id,target}=>{
+                            let port={let s=state.lock().await;match target {cofleet::protocol::TunnelTarget::Workspace=>s.workspace.as_ref().and_then(|w|w.port()),cofleet::protocol::TunnelTarget::Application=>s.pipeline.as_ref().and_then(|p|p.port())}};
+                            let Some(port)=port else {continue};
                             let Ok(permit)=tunnel_slots.clone().try_acquire_owned() else {continue};
                             let config=config.clone();let cookie=login_cookie.clone();
                             tunnels.spawn(async move {let _permit=permit;let _=cofleet::workspace_proxy::agent_tunnel(config,session_id,tunnel_id,port,cookie).await;});

@@ -79,6 +79,7 @@ impl Manager {
 }
 fn state(device_id: Uuid, name: &str) -> Heartbeat {
     Heartbeat {
+        pipeline: None,
         workspace: None,
         docker: None,
         device_id,

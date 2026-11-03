@@ -1,0 +1,66 @@
+{
+  "version": "0.5.0",
+  "date": "2026-11-03",
+  "native": {
+    "checks": {
+      "frozen_source_digest_private_archive_logs_and_build_deduplication": true,
+      "immutable_image_deployment_and_authenticated_application_proxy": true,
+      "application_origin_and_authentication_checks": true,
+      "health_gated_update_previous_release_retained_and_stale_update_rejected": true,
+      "data_migration_release_refused_without_touching_active_application": true,
+      "unhealthy_candidate_never_replaces_running_release": true,
+      "rollback_uses_preserved_immutable_image": true,
+      "symlink_source_rejected_without_disrupting_application": true,
+      "failed_build_preserves_logs_and_current_release": true,
+      "agent_restart_preserves_application_versions_and_request_journal": true,
+      "explicit_stop_is_not_undone_by_replayed_release_operation": true
+    },
+    "scope": "native Docker, isolated node/manager, applications accessed through reverse data tunnels"
+  },
+  "browser": {
+    "code_server_remote_edit_v1_to_v2": true,
+    "build_select_artifact_deploy_and_read_v2": true,
+    "rollback_and_read_v1": true,
+    "read_persisted_build_logs": true
+  },
+  "workspace_regression": {
+    "checks": {
+      "workspace_start_health_and_request_deduplication": true,
+      "ide_http_through_authenticated_reverse_data_channel": true,
+      "anonymous_and_cross_origin_workspace_access_rejected": true,
+      "project_source_dependency_and_service_preview": true,
+      "platform_credentials_not_forwarded_to_project": true,
+      "actual_debugger_breakpoint_inspection_and_resume_over_websocket": true,
+      "manager_restart_and_new_http_session_preserve_running_service": true,
+      "container_recreation_preserves_source_and_installed_dependencies": true,
+      "saved_project_start_script_restores_service": true,
+      "explicit_stop_retains_volume_and_cannot_be_undone_by_old_retry": true,
+      "private_durable_workspace_state": true
+    },
+    "scope": "native Linux; isolated development manager; all IDE traffic uses reverse WebSocket tunnel"
+  },
+  "not_verified": [
+    "independent off-LAN client",
+    "actual low-end client hardware",
+    "Windows / WSL2",
+    "macOS"
+  ],
+  "lazycat": {
+    "version": "0.5.0",
+    "scope": "native omarchy via current authenticated LazyCat domain; no independent WAN or low-end hardware",
+    "checks": {
+      "real_microserver_build_frozen_digest_logs_and_deduplication": true,
+      "immutable_v1_deployed_and_served_through_microserver": true,
+      "v2_health_gated_update_and_previous_release_retained": true,
+      "rollback_restores_exact_v1_image_and_retry_does_not_repeat": true,
+      "existing_workspace_remains_healthy": true
+    }
+  },
+  "validation": {
+    "rust_unit_and_websocket_tests": 21,
+    "clippy_warnings_denied": true,
+    "manager_javascript_syntax": true,
+    "deployed_manager_sha256_matches_packaged_binary": true,
+    "deployed_manager_sha256": "4c788a1af369dc3fd6f356bf32051a4cff83abab0628471ef42353a200157002"
+  }
+}

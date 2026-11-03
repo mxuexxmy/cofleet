@@ -95,6 +95,7 @@ impl Hub {
         &self,
         user: &str,
         device: Uuid,
+        target: crate::protocol::TunnelTarget,
     ) -> Result<tokio::io::DuplexStream, axum::http::StatusCode> {
         use axum::http::StatusCode;
         let (session, sender, slots) = {
@@ -103,12 +104,19 @@ impl Hub {
                 .get(&(user.into(), device))
                 .ok_or(StatusCode::NOT_FOUND)?;
             let session = record.session.as_ref().ok_or(StatusCode::CONFLICT)?;
-            if !record
-                .state
-                .workspace
-                .as_ref()
-                .is_some_and(|w| w.healthy && w.desired_running)
-            {
+            let ready = match target {
+                crate::protocol::TunnelTarget::Workspace => record
+                    .state
+                    .workspace
+                    .as_ref()
+                    .is_some_and(|w| w.healthy && w.desired_running),
+                crate::protocol::TunnelTarget::Application => {
+                    record.state.pipeline.as_ref().is_some_and(|p| {
+                        p.desired_running && p.current.as_ref().is_some_and(|d| d.healthy)
+                    })
+                }
+            };
+            if !ready {
                 return Err(StatusCode::SERVICE_UNAVAILABLE);
             }
             (
@@ -118,7 +126,7 @@ impl Hub {
             )
         };
         self.tunnels
-            .open(user, device, session, sender, slots)
+            .open(user, device, session, sender, slots, target)
             .await
     }
     pub async fn claim_workspace_tunnel(
@@ -149,7 +157,9 @@ impl Hub {
                 .get_mut(&(user.into(), device))
                 .ok_or(StatusCode::NOT_FOUND)?;
             let session = record.session.as_ref().ok_or(StatusCode::CONFLICT)?;
-            if record.state.docker.is_none()
+            if (matches!(&request, crate::docker::DockerRequest::Pipeline { .. })
+                && record.state.pipeline.is_none())
+                || record.state.docker.is_none()
                 || (matches!(&request, crate::docker::DockerRequest::Workspace { .. })
                     && record.state.workspace.is_none())
             {
@@ -345,6 +355,7 @@ mod tests {
     use super::*;
     fn state(id: Uuid) -> Heartbeat {
         Heartbeat {
+            pipeline: None,
             workspace: None,
             docker: None,
             device_id: id,

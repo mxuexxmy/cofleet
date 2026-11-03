@@ -4,6 +4,7 @@ let token = '', platformLogin = false, devices = [], selectedId = null, fresh = 
 let generation = 0, controller = null, lastRefresh = null;
 const dockerViews = new Map();
 const workspaceViews = new Map();
+const pipelineViews = new Map();
 let dockerEpoch = 0;
 const osNames = { linux: 'Linux', windows: 'Windows', macos: 'macOS' };
 
@@ -69,6 +70,8 @@ function pair(list, term, value) {
   const item = el('div'); item.append(el('dt', '', term), el('dd', '', value)); list.append(item);
 }
 function renderDetails(device) {
+  const active = document.activeElement;
+  const focus = active?.id === 'pipeline-project' && active.dataset.device === device?.device_id ? [active.selectionStart, active.selectionEnd] : null;
   const area = $('#details'); area.replaceChildren();
   if (!device) {
     const empty = el('div', 'detail-empty');
@@ -117,6 +120,8 @@ function renderDetails(device) {
   area.append(info);
   renderDocker(area, device);
   renderWorkspace(area, device);
+  renderPipeline(area, device);
+  if (focus) { const input = $('#pipeline-project'); input?.focus(); input?.setSelectionRange(...focus); }
 }
 function renderDocker(area, device) {
   const section = el('section', 'docker-section');
@@ -252,6 +257,78 @@ async function workspaceCall(deviceId, request) {
     if (epoch === dockerEpoch) view.message = error.name === 'AbortError' ? '等待超时，后台可能已执行。重试会沿用同一次操作。' : error.message;
   } finally { clearTimeout(timeout); if (epoch === dockerEpoch) { view.busy = false; render(); } }
 }
+function renderPipeline(area, device) {
+  const section = el('section', 'pipeline-section'), head = el('div', 'section-head');
+  head.append(el('h3', '', '构建与发布'), el('span', 'section-note', '输入快照 · 不可变镜像 · 健康检查'));
+  section.append(head); area.append(section);
+  const pipeline = device.pipeline;
+  if (!pipeline) { section.append(el('p', '', '本机尚未启用构建发布。请使用 --build-deploy 启动已批准开发镜像的 Agent。')); return; }
+  let view = pipelineViews.get(device.device_id);
+  if (!view) { view = { project: 'cofleet-example/release-demo', build: '', busy: false, pending: null, logs: null, message: '' }; pipelineViews.set(device.device_id, view); }
+  const current = pipeline.current, previous = pipeline.previous;
+  section.append(el('p', '', current ? '当前版本 ' + current.id.slice(0, 8) + ' · ' + (!pipeline.desired_running ? '已停止' : current.healthy ? '健康' : '待恢复') : '尚未发布应用'));
+  section.append(el('p', 'policy-tip', '构建使用项目目录中的 Dockerfile 和 .cofleet-release.json。首版只发布无状态 HTTP 应用：8080 端口、/health 检查，不挂载持久数据。'));
+  const label = el('label', 'search-label', '工作空间内的项目相对目录'); label.htmlFor = 'pipeline-project';
+  const input = el('input'); input.id = 'pipeline-project'; input.value = view.project; input.dataset.device = device.device_id; input.maxLength = 128;
+  input.oninput = () => { view.project = input.value; }; section.append(label, input);
+  const actions = el('div', 'docker-actions');
+  const make = (title, request, allow = true) => {
+    const button = el('button', 'secondary', title); button.type = 'button';
+    button.disabled = view.busy || !fresh || !device.online || !allow;
+    button.onclick = () => pipelineCall(device.device_id, { ...request, request_id: crypto.randomUUID() }); actions.append(button);
+  };
+  make('冻结快照并构建', { action: 'build', project_dir: view.project }, device.accepting_tasks);
+  // Read the current input value at click time, rather than a stale render closure.
+  actions.lastChild.onclick = () => pipelineCall(device.device_id, { action: 'build', project_dir: view.project, request_id: crypto.randomUUID() });
+  const builds = pipeline.jobs.filter(j => j.request.action === 'build' && j.status === 'succeeded');
+  for (const release of [current, previous]) if (release && !builds.some(b => b.id === release.build_id)) builds.push({ id: release.build_id, input_digest: release.input_digest });
+  if (!builds.some(j => j.id === view.build)) view.build = builds[0]?.id || '';
+  const select = el('select'); select.setAttribute('aria-label', '选择构建产物'); select.disabled = view.busy;
+  for (const job of builds) { const option = el('option', '', job.id.slice(0, 8) + ' · ' + job.input_digest?.slice(7, 19)); option.value = job.id; option.selected = job.id === view.build; select.append(option); }
+  select.onchange = () => { view.build = select.value; }; section.append(actions, select);
+  const deployActions = el('div', 'docker-actions');
+  const operation = (title, action, enabled, extra = {}) => {
+    const button = el('button', 'secondary', title); button.type = 'button'; button.disabled = view.busy || !fresh || !device.online || !enabled;
+    button.onclick = () => pipelineCall(device.device_id, { action, request_id: crypto.randomUUID(), expected_current: current?.id || null, ...extra, ...(action === 'deploy' ? { build_id: view.build } : {}) });
+    deployActions.append(button);
+  };
+  operation('发布所选产物', 'deploy', !!view.build && device.accepting_tasks);
+  operation('回滚上一版', 'rollback', !!previous && !!current && device.accepting_tasks);
+  operation('停止应用', 'stop', !!current);
+  if (current && current.healthy && pipeline.desired_running && fresh && device.online) { const link = el('a', 'workspace-link', '访问应用'); link.href = 'applications/' + device.device_id + '/'; link.target = '_blank'; link.rel = 'noopener noreferrer'; deployActions.append(link); }
+  section.append(deployActions);
+  if (current) section.append(el('p', 'policy-tip', '镜像：' + current.image_id + '；输入：' + current.input_digest));
+  if (previous) section.append(el('p', 'policy-tip', '上一版：' + previous.id.slice(0, 8) + ' · ' + previous.image_id));
+  if (pipeline.error) section.append(el('p', 'resource-warning', pipeline.error));
+  if (view.pending) { const retry = el('button', 'secondary', '重试未确认请求'); retry.disabled = view.busy; retry.onclick = () => pipelineCall(device.device_id, view.pending); section.append(retry); }
+  if (view.message) { const message = el('p', 'policy-tip', view.message); message.setAttribute('role', 'status'); section.append(message); }
+  const statuses = { capturing: '冻结输入中', queued: '排队中', running: '执行中', succeeded: '成功', failed: '失败', interrupted: '已中断，需检查当前状态' };
+  for (const job of pipeline.jobs) {
+    const row = el('div', 'container-row'); row.append(el('strong', '', job.request.action + ' · ' + job.id.slice(0, 8)), el('span', '', statuses[job.status] || job.status));
+    if (job.error) row.append(el('p', 'resource-warning', job.error));
+    const log = el('button', 'quiet', '读取日志 ' + job.id.slice(0, 8)); log.disabled = view.busy; log.onclick = () => pipelineCall(device.device_id, { action: 'logs', job_id: job.id }); row.append(log); section.append(row);
+  }
+  if (view.logs !== null) section.append(el('pre', 'container-logs', view.logs || '暂无构建日志，操作结果见任务状态。'));
+}
+async function pipelineCall(deviceId, request) {
+  const view = pipelineViews.get(deviceId), epoch = dockerEpoch;
+  if (!view || view.busy) return;
+  view.busy = true; if (request.request_id) view.pending = request; view.message = '正在提交请求…'; render();
+  const abort = new AbortController(), timer = setTimeout(() => abort.abort(), 15000);
+  try {
+    const response = await fetch('api/v1/devices/' + deviceId + '/docker', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CoFleet-Request': '1', ...(platformLogin ? {} : { Authorization: 'Bearer ' + token }) },
+      body: JSON.stringify({ action: 'pipeline', request }), signal: abort.signal, redirect: 'error'
+    });
+    if (!response.ok) throw new Error('请求未确认（' + response.status + '），可用相同请求重试。');
+    const reply = await response.json(); if (epoch !== dockerEpoch) return;
+    const device = devices.find(d => d.device_id === deviceId); if (device && reply.pipeline) device.pipeline = reply.pipeline;
+    if (reply.logs !== null && reply.logs !== undefined) view.logs = reply.logs;
+    if (reply.error) view.message = reply.error;
+    else { view.pending = null; view.message = reply.duplicate ? '已定位原请求，未重复执行。' : '请求已接受。任务状态和日志将保留在节点。'; }
+  } catch (error) { if (epoch === dockerEpoch) view.message = error.name === 'AbortError' ? '提交超时，结果未知；请重试原请求。' : error.message; }
+  finally { clearTimeout(timer); if (epoch === dockerEpoch) { view.busy = false; render(); } }
+}
 function render() {
   const query = $('#search').value.trim().toLocaleLowerCase();
   const visible = devices.filter(d => (!$('#online-only').checked || (fresh && d.online)) && [d.name, d.os, d.arch, d.device_id].some(v => String(v).toLocaleLowerCase().includes(query)));
@@ -307,14 +384,14 @@ async function refresh() {
   }
 }
 $('#login').onsubmit = event => {
-  dockerEpoch++; dockerViews.clear(); workspaceViews.clear();
+  dockerEpoch++; dockerViews.clear(); workspaceViews.clear(); pipelineViews.clear();
   event.preventDefault(); token = $('#token').value; $('#token').value = '';
   fetch('api/v1/workspace-session', { method: 'POST', headers: { Authorization: 'Bearer ' + token, 'X-CoFleet-Request': '1' } }).catch(() => {});
   devices = []; selectedId = null; fresh = false; lastRefresh = null;
   $('#logout').hidden = false; render(); refresh();
 };
 $('#logout').onclick = () => {
-  dockerEpoch++; dockerViews.clear(); workspaceViews.clear();
+  dockerEpoch++; dockerViews.clear(); workspaceViews.clear(); pipelineViews.clear();
   if (token) fetch('api/v1/workspace-session', { method: 'DELETE', headers: { Authorization: 'Bearer ' + token, 'X-CoFleet-Request': '1' } }).catch(() => {});
   generation++; controller?.abort(); token = ''; devices = []; fresh = false; selectedId = null; lastRefresh = null;
   $('#login-panel').hidden = false; $('#logout').hidden = true; $('#refresh').disabled = true;

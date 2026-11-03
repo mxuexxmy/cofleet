@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Heartbeat {
     #[serde(default)]
+    pub pipeline: Option<crate::pipeline::PipelineSnapshot>,
+    #[serde(default)]
     pub workspace: Option<crate::workspace::WorkspaceSnapshot>,
     #[serde(default)]
     pub docker: Option<crate::docker::DockerSnapshot>,
@@ -99,10 +101,20 @@ pub enum AgentMessage {
     },
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TunnelTarget {
+    #[default]
+    Workspace,
+    Application,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HubMessage {
     WorkspaceTunnel {
+        #[serde(default)]
+        target: TunnelTarget,
         tunnel_id: uuid::Uuid,
     },
     DockerCommand {

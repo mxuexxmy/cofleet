@@ -35,6 +35,10 @@ enum Command {
         #[command(subcommand)]
         command: DockerCommand,
     },
+    Pipeline {
+        #[command(subcommand)]
+        command: PipelineCommand,
+    },
     Workspace {
         #[command(subcommand)]
         command: DockerCommand,
@@ -64,6 +68,39 @@ enum DockerCommand {
         request_id: uuid::Uuid,
     },
     Logs,
+}
+#[derive(Subcommand)]
+enum PipelineCommand {
+    Status,
+    Logs {
+        job_id: uuid::Uuid,
+    },
+    Build {
+        #[arg(long)]
+        request_id: uuid::Uuid,
+        #[arg(long)]
+        project_dir: String,
+    },
+    Deploy {
+        #[arg(long)]
+        request_id: uuid::Uuid,
+        #[arg(long)]
+        build_id: uuid::Uuid,
+        #[arg(long)]
+        expected_current: Option<uuid::Uuid>,
+    },
+    Rollback {
+        #[arg(long)]
+        request_id: uuid::Uuid,
+        #[arg(long)]
+        expected_current: uuid::Uuid,
+    },
+    Stop {
+        #[arg(long)]
+        request_id: uuid::Uuid,
+        #[arg(long)]
+        expected_current: Option<uuid::Uuid>,
+    },
 }
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
@@ -136,6 +173,46 @@ async fn main() -> Result<()> {
                                 }
                             }
                             DockerCommand::Logs => cofleet::workspace::WorkspaceRequest::Logs,
+                        },
+                    },
+                },
+                Command::Pipeline { command } => LocalRequest::Docker {
+                    request: cofleet::docker::DockerRequest::Pipeline {
+                        request: match command {
+                            PipelineCommand::Status => cofleet::pipeline::PipelineRequest::Status,
+                            PipelineCommand::Logs { job_id } => {
+                                cofleet::pipeline::PipelineRequest::Logs { job_id }
+                            }
+                            PipelineCommand::Build {
+                                request_id,
+                                project_dir,
+                            } => cofleet::pipeline::PipelineRequest::Build {
+                                request_id,
+                                project_dir,
+                            },
+                            PipelineCommand::Deploy {
+                                request_id,
+                                build_id,
+                                expected_current,
+                            } => cofleet::pipeline::PipelineRequest::Deploy {
+                                request_id,
+                                build_id,
+                                expected_current,
+                            },
+                            PipelineCommand::Rollback {
+                                request_id,
+                                expected_current,
+                            } => cofleet::pipeline::PipelineRequest::Rollback {
+                                request_id,
+                                expected_current,
+                            },
+                            PipelineCommand::Stop {
+                                request_id,
+                                expected_current,
+                            } => cofleet::pipeline::PipelineRequest::Stop {
+                                request_id,
+                                expected_current,
+                            },
                         },
                     },
                 },

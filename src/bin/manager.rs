@@ -103,15 +103,17 @@ async fn workspace_session(
     app.auth.identify(&headers, peer.ip())?;
     let mut response = StatusCode::NO_CONTENT.into_response();
     if app.auth.mode == AuthMode::Development {
-        response.headers_mut().insert(
-            header::SET_COOKIE,
-            format!(
-                "cofleet_workspace={}; Path=/workspaces/; HttpOnly; SameSite=Strict",
-                app.workspace_cookie
-            )
-            .parse()
-            .unwrap(),
-        );
+        for path in ["/workspaces/", "/applications/"] {
+            response.headers_mut().append(
+                header::SET_COOKIE,
+                format!(
+                    "cofleet_workspace={}; Path={path}; HttpOnly; SameSite=Strict",
+                    app.workspace_cookie
+                )
+                .parse()
+                .unwrap(),
+            );
+        }
     }
     Ok(response)
 }
@@ -128,14 +130,16 @@ async fn clear_workspace_session(
         return Err(StatusCode::FORBIDDEN);
     }
     app.auth.identify(&headers, peer.ip())?;
-    Ok((
-        [(
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    for path in ["/workspaces/", "/applications/"] {
+        response.headers_mut().append(
             header::SET_COOKIE,
-            "cofleet_workspace=; Path=/workspaces/; HttpOnly; SameSite=Strict; Max-Age=0",
-        )],
-        StatusCode::NO_CONTENT,
-    )
-        .into_response())
+            format!("cofleet_workspace=; Path={path}; HttpOnly; SameSite=Strict; Max-Age=0")
+                .parse()
+                .unwrap(),
+        );
+    }
+    Ok(response)
 }
 async fn workspace_proxy(
     State(app): State<App>,
@@ -170,7 +174,15 @@ async fn workspace_proxy(
         .ok_or(StatusCode::BAD_REQUEST)?
         .parse::<uuid::Uuid>()
         .map_err(|_| StatusCode::BAD_REQUEST)?;
-    let prefix = format!("/workspaces/{device}/");
+    let target = if request.uri().path().starts_with("/applications/") {
+        cofleet::protocol::TunnelTarget::Application
+    } else {
+        cofleet::protocol::TunnelTarget::Workspace
+    };
+    let prefix = match target {
+        cofleet::protocol::TunnelTarget::Application => format!("/applications/{device}/"),
+        cofleet::protocol::TunnelTarget::Workspace => format!("/workspaces/{device}/"),
+    };
     // Resolve ownership even before returning the trailing slash redirect.
     if !app.hub.owns_device(&user, device).await {
         return Err(StatusCode::NOT_FOUND);
@@ -187,7 +199,7 @@ async fn workspace_proxy(
         );
         return Ok(axum::response::Redirect::temporary(&location).into_response());
     }
-    let stream = app.hub.workspace_stream(&user, device).await?;
+    let stream = app.hub.workspace_stream(&user, device, target).await?;
     cofleet::workspace_proxy::proxy(request, stream, &prefix).await
 }
 async fn workspace_tunnel(
@@ -336,6 +348,9 @@ async fn main() -> Result<()> {
             post(workspace_session).delete(clear_workspace_session),
         )
         .route("/api/workspace-tunnel/{device}/{id}", get(workspace_tunnel))
+        .route("/applications/{device}", any(workspace_proxy))
+        .route("/applications/{device}/", any(workspace_proxy))
+        .route("/applications/{device}/{*path}", any(workspace_proxy))
         .route("/workspaces/{device}", any(workspace_proxy))
         .route("/workspaces/{device}/", any(workspace_proxy))
         .route("/workspaces/{device}/{*path}", any(workspace_proxy))

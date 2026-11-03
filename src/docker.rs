@@ -19,6 +19,9 @@ const SPEC_VERSION: &str = "test-v1";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum DockerRequest {
+    Pipeline {
+        request: crate::pipeline::PipelineRequest,
+    },
     Workspace {
         request: crate::workspace::WorkspaceRequest,
     },
@@ -48,6 +51,8 @@ pub struct DockerSnapshot {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DockerReply {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline: Option<crate::pipeline::PipelineSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<crate::workspace::WorkspaceSnapshot>,
     pub snapshot: Option<DockerSnapshot>,
@@ -160,6 +165,7 @@ impl DockerController {
                     let output = docker(&["logs", "--tail", "40", "--timestamps", &id]).await?;
                     reply.logs = Some(output[..output.floor_char_boundary(4096)].to_owned());
                 }
+                DockerRequest::Pipeline { .. } => anyhow::bail!("pipeline dispatcher unavailable"),
                 DockerRequest::Workspace { .. } => {
                     anyhow::bail!("workspace dispatcher unavailable")
                 }

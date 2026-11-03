@@ -64,6 +64,7 @@ impl Tunnels {
         session: Uuid,
         sender: tokio::sync::mpsc::Sender<HubMessage>,
         node_slots: Arc<Semaphore>,
+        target: crate::protocol::TunnelTarget,
     ) -> Result<DuplexStream, StatusCode> {
         let permits = (
             self.slots
@@ -94,7 +95,10 @@ impl Tunnels {
             pending: self.pending.clone(),
         };
         sender
-            .try_send(HubMessage::WorkspaceTunnel { tunnel_id: id })
+            .try_send(HubMessage::WorkspaceTunnel {
+                tunnel_id: id,
+                target,
+            })
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
         tokio::time::timeout(Duration::from_secs(15), rx)
             .await
@@ -320,7 +324,7 @@ pub async fn proxy(
     }
     // Node Inspector permits only loopback/IP Host values (DNS rebinding protection).
     // Public Origin/owner checks have already run; normalize only this fixed container port.
-    if path.starts_with("/proxy/9229/") {
+    if prefix.starts_with("/workspaces/") && path.starts_with("/proxy/9229/") {
         request
             .headers_mut()
             .insert(header::HOST, "127.0.0.1:9229".parse().unwrap());
@@ -392,10 +396,17 @@ mod tests {
         let other = tunnels.clone();
         let task = tokio::spawn(async move {
             other
-                .open("alice", device, session, tx, Arc::new(Semaphore::new(1)))
+                .open(
+                    "alice",
+                    device,
+                    session,
+                    tx,
+                    Arc::new(Semaphore::new(1)),
+                    crate::protocol::TunnelTarget::Workspace,
+                )
                 .await
         });
-        let HubMessage::WorkspaceTunnel { tunnel_id } = rx.recv().await.unwrap() else {
+        let HubMessage::WorkspaceTunnel { tunnel_id, .. } = rx.recv().await.unwrap() else {
             panic!("expected tunnel")
         };
         assert!(tunnels.claim("bob", device, session, tunnel_id).is_none());

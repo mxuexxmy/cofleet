@@ -16,3 +16,5 @@ pub mod docker;
 
 pub mod workspace;
 pub mod workspace_proxy;
+
+pub mod pipeline;
