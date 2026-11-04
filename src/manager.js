@@ -11,7 +11,7 @@ const observedCatalogs = new Map();
 const observedLogs = new Map();
 const observedTargets = new Map();
 let observeController = null, observeSession = 0;
-let endpointBusy = false;
+let endpointBusy = false, accessMode = 'legacy';
 const osNames = { linux: 'Linux', windows: 'Windows', macos: 'macOS' };
 
 function el(tag, className, text) {
@@ -515,7 +515,9 @@ function renderApplications() {
   const available = fresh && devices.some(device => device.device_id === deviceId && device.online && device.docker_observe);
   $('#endpoint-discover').disabled = endpointBusy || !available;
   $('#endpoint-logs').disabled = endpointBusy || !available || !selectedObserved();
-  $('#endpoint-submit').disabled = endpointBusy || !available || !catalog;
+  $('#endpoint-trust-label').hidden = accessMode !== 'trusted_prefix';
+  $('#access-policy').textContent = accessMode === 'trusted_prefix' ? '自动前缀入口仅用于你主动添加的受信任应用。应用使用独立来源，与微服共享父域，不能隔离普通父域 Cookie。' : accessMode === 'disabled' ? '应用访问入口尚未配置；可以继续查看容器与日志。' : '';
+  $('#endpoint-submit').disabled = endpointBusy || !available || !catalog || accessMode === 'disabled' || (accessMode === 'trusted_prefix' && !$('#endpoint-trust').checked);
   const area = el('div', 'endpoint-list'); area.id = 'endpoint-list';
   if (!endpoints.length) area.append(el('p', '', fresh ? '尚未添加应用入口。' : '连接后读取入口。'));
   for (const endpoint of endpoints) {
@@ -588,9 +590,10 @@ $('#observe-search').oninput = () => renderApplications();
 $('#observe-state').onchange = () => renderApplications();
 async function updateEndpoint(endpoint, change) { endpointBusy = true; endpointNotice('正在保存入口…'); renderApplications(); try { const response = await fetch('api/v1/access-endpoints/' + endpoint.id, { method: 'PATCH', headers: requestHeaders(true), body: JSON.stringify({ revision: endpoint.revision, ...change }), redirect: 'error' }); if (!response.ok) throw new Error(await response.text() || '保存失败（' + response.status + '）。'); const saved = await response.json(); endpoints = endpoints.map(value => value.id === saved.id ? saved : value); endpointNotice('入口已保存；在线 Agent 将按新 revision 重新核验。'); } catch (error) { endpointNotice(error.message, true); } finally { endpointBusy = false; renderApplications(); } }
 async function removeEndpoint(endpoint) { if (!confirm('只删除 CoFleet 入口，不会删除原容器和数据。继续？')) return; endpointBusy = true; endpointNotice('正在删除入口…'); renderApplications(); try { const response = await fetch('api/v1/access-endpoints/' + endpoint.id + '?revision=' + endpoint.revision, { method: 'DELETE', headers: requestHeaders(), redirect: 'error' }); if (!response.ok) throw new Error(await response.text() || '删除失败（' + response.status + '）。'); endpoints = endpoints.filter(value => value.id !== endpoint.id); endpointNotice('入口已删除；原应用和数据未更改。'); } catch (error) { endpointNotice(error.message, true); } finally { endpointBusy = false; renderApplications(); } }
+$('#endpoint-trust').onchange = () => renderApplications();
 $('#endpoint-discover').onclick = discoverContainers;
 $('#endpoint-logs').onclick = () => { const selected = selectedObserved(); if (selected) readObservedLogs($('#endpoint-device').value, selected.container.id, selected.container.name); };
-$('#endpoint-form').onsubmit = async event => { event.preventDefault(); const selected = selectedObserved(); if (!selected || endpointBusy) return; const deviceId = $('#endpoint-device').value, catalog = observedCatalogs.get(deviceId), mode = $('#endpoint-binding').value; if (mode === 'compose' && (!selected.container.compose_project || !selected.container.compose_service)) { endpointNotice('这个容器没有 Compose 项目/服务标签，请选择当前容器绑定。', true); return; } endpointBusy = true; endpointNotice('正在保存并要求 Agent 核验入口…'); renderApplications(); const protocol = $('#endpoint-protocol').value; const body = { id: crypto.randomUUID(), device_id: deviceId, environment_id: catalog.environment_id, binding: mode === 'compose' ? { kind: 'compose', project: selected.container.compose_project, service: selected.container.compose_service } : { kind: 'container', container_id: selected.container.id }, container_port: selected.port, protocol, tls_server_name: protocol === 'https' ? $('#endpoint-tls').value.trim() : null, name: $('#endpoint-name').value.trim(), management_url: $('#endpoint-management').value.trim() || null }; try { const response = await fetch('api/v1/access-endpoints', { method: 'POST', headers: requestHeaders(true), body: JSON.stringify(body), redirect: 'error' }); if (!response.ok) throw new Error(await response.text() || '创建失败（' + response.status + '）。'); endpoints.push(await response.json()); $('#endpoint-name').value = ''; endpointNotice('入口配置已持久保存。打开时仍会重新核对容器、端口和当前 Agent 会话。'); } catch (error) { endpointNotice(error.message, true); } finally { endpointBusy = false; renderApplications(); } };
+$('#endpoint-form').onsubmit = async event => { event.preventDefault(); const selected = selectedObserved(); if (!selected || endpointBusy) return; const deviceId = $('#endpoint-device').value, catalog = observedCatalogs.get(deviceId), mode = $('#endpoint-binding').value; if (mode === 'compose' && (!selected.container.compose_project || !selected.container.compose_service)) { endpointNotice('这个容器没有 Compose 项目/服务标签，请选择当前容器绑定。', true); return; } endpointBusy = true; endpointNotice('正在保存并要求 Agent 核验入口…'); renderApplications(); const protocol = $('#endpoint-protocol').value; const body = { trusted_application: accessMode === 'trusted_prefix' && $('#endpoint-trust').checked, id: crypto.randomUUID(), device_id: deviceId, environment_id: catalog.environment_id, binding: mode === 'compose' ? { kind: 'compose', project: selected.container.compose_project, service: selected.container.compose_service } : { kind: 'container', container_id: selected.container.id }, container_port: selected.port, protocol, tls_server_name: protocol === 'https' ? $('#endpoint-tls').value.trim() : null, name: $('#endpoint-name').value.trim(), management_url: $('#endpoint-management').value.trim() || null }; try { const response = await fetch('api/v1/access-endpoints', { method: 'POST', headers: requestHeaders(true), body: JSON.stringify(body), redirect: 'error' }); if (!response.ok) throw new Error(await response.text() || '创建失败（' + response.status + '）。'); endpoints.push(await response.json()); $('#endpoint-name').value = ''; endpointNotice('入口配置已持久保存。打开时仍会重新核对容器、端口和当前 Agent 会话。'); } catch (error) { endpointNotice(error.message, true); } finally { endpointBusy = false; renderApplications(); } };
 
 function scheduleReason(reason) {
   const messages = {
@@ -736,6 +739,7 @@ $('#login').onsubmit = event => {
 };
 $('#logout').onclick = () => {
   dockerEpoch++; pendingSchedule = null; submittingSchedule = false; dockerViews.clear(); workspaceViews.clear(); pipelineViews.clear(); deviceViews.clear(); mobileDetail = false;
+  if (platformLogin && accessMode === 'trusted_prefix') { fetch('api/v1/access-session', { method: 'DELETE', headers: requestHeaders(), keepalive: true }).catch(() => {}); platformLogin = false; }
   if (token) fetch('api/v1/workspace-session', { method: 'DELETE', headers: { Authorization: 'Bearer ' + token, 'X-CoFleet-Request': '1' } }).catch(() => {});
   generation++; controller?.abort(); token = ''; devices = []; workloads = []; endpoints = []; observeSession++; observedCatalogs.clear(); observedLogs.clear(); observedTargets.clear(); observeController?.abort(); endpointBusy = false; fresh = false; selectedId = null; lastRefresh = null;
   $('#login-panel').hidden = false; $('#logout').hidden = true; $('#refresh').disabled = true;
@@ -743,6 +747,7 @@ $('#logout').onclick = () => {
 };
 function resetInterface() {
   $('#search').value = ''; $('#online-only').checked = false;
+  $('#endpoint-trust').checked = false;
   $('#schedule-form').reset(); $('#schedule-notice').textContent = '';
   $('#updated-at').textContent = '每 5 秒自动更新'; showPage('computers');
 }
@@ -753,6 +758,7 @@ $('#refresh').onclick = refresh;
 $('#search').oninput = render;
 $('#online-only').onchange = render;
 fetch('api/v1/auth-mode', { redirect: 'error' }).then(response => response.json()).then(mode => {
+  accessMode = mode.access_mode || 'legacy';
   if (mode.auth === 'lazycat') {
     platformLogin = true; $('#login-panel').hidden = true; $('#refresh').disabled = false;
     setNotice('正在读取已接入的设备…'); refresh();

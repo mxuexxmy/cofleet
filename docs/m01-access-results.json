@@ -1,0 +1,74 @@
+{
+  "stage": "M0.1-local",
+  "checks": {
+    "host_only_secure_httponly_manager_session": true,
+    "copied_ticket_without_browser_binding_rejected": true,
+    "duplicate_grant_issue_rejected": true,
+    "browser_form_redemption_and_application_access": true,
+    "access_session_not_sent_to_sibling": true,
+    "copied_session_rejected_on_wrong_host": true,
+    "redeemed_ticket_replay_rejected": true,
+    "parent_domain_host_cookie_forgery_rejected": true,
+    "shared_parent_cookie_contamination_reproduced": true,
+    "app_javascript_cannot_read_httponly_access_session": true,
+    "cross_origin_management_response_unreadable": true,
+    "application_origin_management_mutation_denied": true,
+    "management_path_on_application_host_denied": true,
+    "fixture_other_account_cannot_authorize_owner_endpoint": true,
+    "revision_change_invalidates_existing_session": true,
+    "manager_logout_invalidates_application_session": true,
+    "logout_invalidates_unredeemed_grant": true
+  },
+  "strict_parent_cookie_isolation": false,
+  "production_ready": false,
+  "limitations": [
+    "Local self-signed TLS trusted only by isolated browser context; no platform TLS validation.",
+    "Fixture accounts only; no real second LazyCat account or platform logout tested.",
+    "Shared parent cookie writes remain possible; platform cookie poisoning and availability impact are unresolved.",
+    "This probe is separate from the production Manager; no production access gate is bypassed."
+  ],
+  "platform": {
+    "stage": "M0.1-platform-cookie-prefix",
+    "checks": {
+      "actual_generated_hosts_and_platform_tls": true,
+      "synthetic_host_session_not_sent_to_sibling": true,
+      "parent_domain_host_session_forgery_rejected": true,
+      "httponly_synthetic_session_not_readable": true
+    },
+    "strict_parent_cookie_isolation": false,
+    "production_ready": false,
+    "limitations": [
+      "Synthetic __Host marker only, not an implemented production authorization flow.",
+      "Ordinary parent-domain marker is still visible on management host.",
+      "No real platform credential mutation, second-account or platform logout test."
+    ]
+  },
+  "trusted_mode_release": {
+    "version": "0.7.1",
+    "checks": {
+      "trusted_consent_and_creation": true,
+      "automatic_prefix_host_tls_and_platform_identity": true,
+      "browser_bound_authorization": true,
+      "http_service_access": true,
+      "health_path": true,
+      "host_only_access_cookie": true,
+      "management_cookie_not_sent_to_app": true,
+      "application_host_not_management_api": true,
+      "disable_denies_access": true,
+      "enable_requires_fresh_grant": true,
+      "manager_logout_revokes_access": true,
+      "browser_errors_absent": true,
+      "application_cookie_login": true,
+      "application_authorization_preserved": true,
+      "identity_and_gateway_cookies_stripped": true,
+      "websocket_echo": true,
+      "logout_closes_live_websocket": true
+    },
+    "limitations": [
+      "Shared parent ordinary cookies remain possible: trusted applications only.",
+      "Second real account and platform-side logout were not tested."
+    ],
+    "scope": "explicitly_trusted_applications_only",
+    "deployment": "separate plain-label access workbench; legacy manager domain unchanged"
+  }
+}

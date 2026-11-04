@@ -362,7 +362,8 @@ async fn inspect_one(id: &str) -> Result<serde_json::Value> {
         "com.docker.compose.oneoff":{{json (index .Config.Labels "com.docker.compose.oneoff")}}
       }},
       "State":{"Status":{{json .State.Status}},"Health":{"Status":{{with (index .State "Health")}}{{json .Status}}{{else}}null{{end}}}},
-      "HostConfig":{"PortBindings":{{json .HostConfig.PortBindings}}}
+      "HostConfig":{"PortBindings":{{json .HostConfig.PortBindings}}},
+      "NetworkSettings":{"Ports":{{json .NetworkSettings.Ports}}}
     }"#;
     let output = crate::docker::docker(&["inspect", "--format", FORMAT, id]).await?;
     serde_json::from_str(output.trim()).context("invalid Docker inspect response")
@@ -405,7 +406,14 @@ fn observed(value: serde_json::Value) -> Result<ObservedContainer> {
             .map(|v| v.chars().take(128).collect())
     };
     let mut ports = Vec::new();
-    if let Some(bindings) = value["HostConfig"]["PortBindings"].as_object() {
+    // HostConfig contains an empty HostPort for dynamically allocated mappings.
+    // Only NetworkSettings reflects the engine's currently assigned listening port.
+    let bindings = if value["State"]["Status"].as_str() == Some("running") {
+        &value["NetworkSettings"]["Ports"]
+    } else {
+        &value["HostConfig"]["PortBindings"]
+    };
+    if let Some(bindings) = bindings.as_object() {
         for (key, mappings) in bindings {
             let Some((port, protocol)) = key.split_once('/') else {
                 continue;
@@ -534,6 +542,15 @@ fn persist(dir: &Path, value: &Persisted) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dynamically_assigned_ports_come_from_runtime_bindings() {
+        let value = serde_json::json!({"Id":"a".repeat(64),"Name":"/fixture","Config":{"Image":"fixture"},"State":{"Status":"running"},"HostConfig":{"PortBindings":{"8800/tcp":[{"HostIp":"127.0.0.1","HostPort":""}]}},"NetworkSettings":{"Ports":{"8800/tcp":[{"HostIp":"127.0.0.1","HostPort":"45321"}]}}});
+        let container = observed(value).unwrap();
+        assert_eq!(container.ports.len(), 1);
+        assert_eq!(container.ports[0].host_port, 45321);
+        assert!(container.ports[0].supported);
+    }
+
     fn container(
         id: char,
         project: Option<&str>,

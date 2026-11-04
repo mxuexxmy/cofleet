@@ -53,6 +53,8 @@
       <p id="endpoint-notice" class="notice" role="status"></p>
       <details id="observed-logs" class="logs-disclosure" hidden><summary>容器日志</summary><pre class="container-logs" tabindex="0" aria-label="容器日志内容"></pre></details>
       <h2>添加应用入口</h2>
+      <p id="access-policy" class="notice" role="status"></p>
+      <label id="endpoint-trust-label" class="filter" hidden><input id="endpoint-trust" type="checkbox">我信任此应用，并知悉它与微服共享父域</label>
       <form id="endpoint-form" class="schedule-form">
 
         <label>已发布服务<select id="endpoint-target" required><option value="">先读取容器</option></select></label>

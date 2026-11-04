@@ -1,0 +1,89 @@
+{
+  "created_at": "2026-11-04T14:08:09+00:00",
+  "documents": [
+    {
+      "attempt_errors": [],
+      "bytes": 2625,
+      "content_type": "text/plain; charset=utf-8",
+      "local_file": "secondary-domains.md",
+      "official_commit": null,
+      "requested_url": "https://gitee.com/lazycatcloud/lzc-developer-doc/raw/master/docs/advanced-secondary-domains.md",
+      "sha256": "41c614eb255977be340b1bc2eef526ef5506e5af0f050be960a1200bb37b65ed",
+      "source_kind": "raw",
+      "source_url": "https://raw.giteeusercontent.com/lazycatcloud/lzc-developer-doc/raw/master/docs/advanced-secondary-domains.md",
+      "status": "downloaded",
+      "title": "应用多域名",
+      "topic": "secondary-domains"
+    },
+    {
+      "attempt_errors": [],
+      "bytes": 6486,
+      "content_type": "text/plain; charset=utf-8",
+      "local_file": "route.md",
+      "official_commit": null,
+      "requested_url": "https://gitee.com/lazycatcloud/lzc-developer-doc/raw/master/docs/advanced-route.md",
+      "sha256": "89e5d3ba4480cde9d487cbbf19fd21ef358d181065514a0011bcae9895d22a61",
+      "source_kind": "raw",
+      "source_url": "https://raw.giteeusercontent.com/lazycatcloud/lzc-developer-doc/raw/master/docs/advanced-route.md",
+      "status": "downloaded",
+      "title": "HTTP 路由",
+      "topic": "route"
+    },
+    {
+      "attempt_errors": [],
+      "bytes": 5119,
+      "content_type": "text/plain; charset=utf-8",
+      "local_file": "headers.md",
+      "official_commit": null,
+      "requested_url": "https://gitee.com/lazycatcloud/lzc-developer-doc/raw/master/docs/http-request-headers.md",
+      "sha256": "0197ea25f93776df84bbb69224ab072b69c9c98febc582beb571a28c4be855fe",
+      "source_kind": "raw",
+      "source_url": "https://raw.giteeusercontent.com/lazycatcloud/lzc-developer-doc/raw/master/docs/http-request-headers.md",
+      "status": "downloaded",
+      "title": "HTTP 身份 Header",
+      "topic": "headers"
+    },
+    {
+      "attempt_errors": [],
+      "bytes": 1313,
+      "content_type": "text/plain; charset=utf-8",
+      "local_file": "public-api.md",
+      "official_commit": null,
+      "requested_url": "https://gitee.com/lazycatcloud/lzc-developer-doc/raw/master/docs/advanced-public-api.md",
+      "sha256": "fb34ab9ba2d0aaaa39cb2be781d7b8e20c089fd1ce6d06d48a2d8687561ec503",
+      "source_kind": "raw",
+      "source_url": "https://raw.giteeusercontent.com/lazycatcloud/lzc-developer-doc/raw/master/docs/advanced-public-api.md",
+      "status": "downloaded",
+      "title": "独立鉴权与 public_path",
+      "topic": "public-api"
+    },
+    {
+      "attempt_errors": [],
+      "bytes": 3709,
+      "content_type": "text/plain; charset=utf-8",
+      "local_file": "oidc.md",
+      "official_commit": null,
+      "requested_url": "https://gitee.com/lazycatcloud/lzc-developer-doc/raw/master/docs/advanced-oidc.md",
+      "sha256": "ba42ae5ba7865a946e0be397a27cc6d2ca9122d59f127e6bb6dd6d23b030e763",
+      "source_kind": "raw",
+      "source_url": "https://raw.giteeusercontent.com/lazycatcloud/lzc-developer-doc/raw/master/docs/advanced-oidc.md",
+      "status": "downloaded",
+      "title": "OIDC 单点登录",
+      "topic": "oidc"
+    }
+  ],
+  "repository": "https://gitee.com/lazycatcloud/lzc-developer-doc",
+  "requested_official_commit": null,
+  "result": "success",
+  "schema_version": 1,
+  "source_policy": [
+    "gitee-raw",
+    "developer-site",
+    "aipod-official-site-only",
+    "explicit-offline-declaration"
+  ],
+  "target_versions": {
+    "lzc_cli": "2.0.9",
+    "lzcos": "1.6.2+fix.4"
+  }
+}

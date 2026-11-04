@@ -222,6 +222,15 @@ impl Hub {
     pub fn cancel_access_endpoint(&self, user: &str, endpoint: Uuid) {
         self.tunnels.cancel_access(user, endpoint);
     }
+    pub async fn current_session(&self, user: &str, device: Uuid) -> Option<Uuid> {
+        self.records
+            .read()
+            .await
+            .get(&(user.into(), device))?
+            .session
+            .as_ref()
+            .map(|s| s.id)
+    }
     pub async fn observe(
         &self,
         user: &str,

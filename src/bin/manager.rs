@@ -1,3 +1,5 @@
+#[path = "../manager_access.rs"]
+mod manager_access;
 use anyhow::Result;
 use axum::{
     Json, Router,
@@ -35,6 +37,11 @@ struct Args {
     /// Dedicated cookie-site base for untrusted application hosts. Without it, access endpoints are disabled.
     #[arg(long)]
     access_domain: Option<String>,
+    /// Opt in to automatic prefix hosts for applications explicitly trusted by their owner.
+    #[arg(long, conflicts_with = "access_domain")]
+    trusted_app_prefix: bool,
+    #[arg(long, env = "LAZYCAT_APP_DOMAIN")]
+    management_domain: Option<String>,
 }
 #[derive(Clone)]
 struct App {
@@ -44,6 +51,9 @@ struct App {
     connections: Arc<tokio::sync::Semaphore>,
     endpoints: cofleet::access::EndpointStore,
     access_domain: Option<String>,
+    management_domain: Option<String>,
+    trusted_prefix: bool,
+    access_sessions: cofleet::access_sessions::Sessions,
     endpoint_status:
         Arc<tokio::sync::RwLock<std::collections::HashMap<(String, uuid::Uuid), EndpointStatus>>>,
 }
@@ -78,6 +88,14 @@ struct LogsQuery {
 #[derive(serde::Deserialize)]
 struct RevisionQuery {
     revision: u64,
+}
+
+#[derive(serde::Deserialize)]
+struct EndpointInput {
+    #[serde(flatten)]
+    request: cofleet::access::CreateEndpoint,
+    #[serde(default)]
+    trusted_application: bool,
 }
 
 fn request_marked(headers: &HeaderMap) -> bool {
@@ -246,8 +264,9 @@ async fn create_endpoint(
     State(app): State<App>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    Json(request): Json<cofleet::access::CreateEndpoint>,
+    Json(input): Json<EndpointInput>,
 ) -> Result<(StatusCode, Json<EndpointView>), (StatusCode, String)> {
+    let request = input.request;
     if !request_marked(&headers) {
         return Err((StatusCode::FORBIDDEN, "missing request marker".into()));
     }
@@ -258,23 +277,50 @@ async fn create_endpoint(
     if !app.hub.owns_device(&user, request.device_id).await {
         return Err((StatusCode::NOT_FOUND, "device not found".into()));
     }
-    let domain = app.access_domain.as_deref().ok_or((
-        StatusCode::PRECONDITION_FAILED,
-        "isolated access domain is not configured".into(),
-    ))?;
-    let management = host(&headers).ok_or((StatusCode::BAD_REQUEST, "missing Host".into()))?;
-    if cookie_site(&management) == cookie_site(domain) {
+    if !manager_access::mutation_allowed(&app, &headers, &user) {
         return Err((
-            StatusCode::PRECONDITION_FAILED,
-            "access domain must use a different cookie site from management".into(),
+            StatusCode::FORBIDDEN,
+            "请重新打开管理中心建立会话后再添加入口。".into(),
         ));
     }
+    let public_url = if app.trusted_prefix {
+        if !input.trusted_application {
+            return Err((
+                StatusCode::PRECONDITION_FAILED,
+                "请确认这是你信任的应用。".into(),
+            ));
+        }
+        format!(
+            "https://e-{}-{}/",
+            request.id.simple(),
+            app.management_domain.as_deref().unwrap()
+        )
+    } else {
+        let domain = app.access_domain.as_deref().ok_or((
+            StatusCode::PRECONDITION_FAILED,
+            "尚未配置应用访问模式，请联系管理员。".into(),
+        ))?;
+        let management = host(&headers).ok_or((StatusCode::BAD_REQUEST, "missing Host".into()))?;
+        if cookie_site(&management) == cookie_site(domain) {
+            return Err((
+                StatusCode::PRECONDITION_FAILED,
+                "access domain must use a different cookie site from management".into(),
+            ));
+        }
+        access_public_url(request.id, domain)
+    };
     let request_id = request.id;
     let endpoint = app
         .endpoints
-        .create(&user, request, access_public_url(request_id, domain))
+        .create(&user, request, public_url)
         .await
         .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+    if app.trusted_prefix {
+        app.endpoints
+            .trust(&user, request_id)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
     sync_endpoint(&app, &user, &endpoint).await;
     Ok((
         StatusCode::CREATED,
@@ -295,12 +341,17 @@ async fn patch_endpoint(
         .auth
         .identify(&headers, peer.ip())
         .map_err(|s| (s, "authentication failed".into()))?;
+    if !manager_access::mutation_allowed(&app, &headers, &user) {
+        return Err((StatusCode::FORBIDDEN, "管理会话或来源校验失败。".into()));
+    }
     let endpoint = app
         .endpoints
         .patch(&user, id, change)
         .await
         .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "endpoint not found".into()))?;
+    app.access_sessions.revoke(id);
+    app.hub.cancel_access_endpoint(&user, id);
     sync_endpoint(&app, &user, &endpoint).await;
     if !endpoint.enabled {
         let _ = app
@@ -331,6 +382,9 @@ async fn delete_endpoint(
         .auth
         .identify(&headers, peer.ip())
         .map_err(|s| (s, "authentication failed".into()))?;
+    if !manager_access::mutation_allowed(&app, &headers, &user) {
+        return Err((StatusCode::FORBIDDEN, "管理会话或来源校验失败。".into()));
+    }
     let old = app
         .endpoints
         .get(&user, id)
@@ -345,6 +399,7 @@ async fn delete_endpoint(
     {
         return Err((StatusCode::NOT_FOUND, "endpoint not found".into()));
     }
+    app.access_sessions.revoke(id);
     app.hub.cancel_access_endpoint(&user, id);
     app.endpoint_status
         .write()
@@ -408,6 +463,20 @@ async fn access_request(
         Ok(stream) => stream,
         Err(status) => return status.into_response(),
     };
+    let stream = if app.trusted_prefix {
+        let Some(token) = cofleet::access_sessions::cookie(
+            request.headers(),
+            cofleet::access_sessions::ACCESS_COOKIE,
+        ) else {
+            return StatusCode::UNAUTHORIZED.into_response();
+        };
+        let Some(binding) = manager_access::binding(app, &endpoint, &authority).await else {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        };
+        manager_access::leased_stream(app.clone(), stream, token, binding)
+    } else {
+        stream
+    };
     let upstream = match endpoint.definition.protocol {
         cofleet::access::AccessProtocol::Http => {
             format!("http://{}:{}", resolution.host, resolution.port)
@@ -444,6 +513,14 @@ async fn dispatch(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: Request,
 ) -> Response {
+    if front.app.trusted_prefix {
+        let mut response = manager_access::dispatch(front, peer, request).await;
+        // Every navigation must return to the authorization boundary, including after disable/logout.
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+        return response;
+    }
     let authority = host(request.headers()).unwrap_or_default();
     if let Some(domain) = &front.app.access_domain {
         let suffix = format!(".{}", domain.trim_end_matches('.').to_ascii_lowercase());
@@ -471,7 +548,7 @@ async fn whoami(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let user = app.auth.identify(&headers, peer.ip())?;
     Ok(Json(
-        serde_json::json!({ "user":user, "auth":app.auth.mode, "version":env!("CARGO_PKG_VERSION") }),
+        serde_json::json!({ "user":user, "auth":app.auth.mode, "version":env!("CARGO_PKG_VERSION"), "access_mode":if app.trusted_prefix {"trusted_prefix"}else if app.access_domain.is_some(){"isolated_domain"}else{"disabled"} }),
     ))
 }
 async fn devices(
@@ -742,6 +819,28 @@ async fn main() -> Result<()> {
             "--access-domain must be a bare DNS suffix"
         );
     }
+    if args.trusted_app_prefix {
+        let domain = args.management_domain.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "trusted prefix mode requires --management-domain or LAZYCAT_APP_DOMAIN"
+            )
+        })?;
+        anyhow::ensure!(
+            domain == domain.to_ascii_lowercase()
+                && domain.len() <= 200
+                && domain.split('.').count() >= 3
+                && !domain.contains(['/', ':', '@', '\\'])
+                && domain.split('.').all(|p| !p.is_empty()
+                    && !p.starts_with('-')
+                    && !p.ends_with('-')
+                    && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')),
+            "invalid management domain"
+        );
+        anyhow::ensure!(
+            domain.split('.').next().unwrap().len() + 35 <= 63,
+            "management subdomain is too long for prefix hosts"
+        );
+    }
     let token = match args.auth {
         AuthMode::Development => {
             let token = std::env::var("COFLEET_TOKEN").map_err(|_| {
@@ -775,100 +874,114 @@ async fn main() -> Result<()> {
         access_domain: args
             .access_domain
             .map(|v| v.trim().trim_end_matches('.').to_ascii_lowercase()),
+        management_domain: args.management_domain,
+        trusted_prefix: args.trusted_app_prefix,
+        access_sessions: Default::default(),
         endpoint_status: Default::default(),
     };
     let mode = app.auth.mode;
-    let routes = Router::new()
-        .route("/", get(|| async { Html(include_str!("../manager.html")) }))
-        .route(
-            "/favicon.ico",
-            get(|| async {
-                (
-                    [
-                        (header::CONTENT_TYPE, "image/vnd.microsoft.icon"),
-                        (header::CACHE_CONTROL, "public, max-age=86400"),
-                    ],
-                    include_bytes!("../../assets/favicon.ico").as_slice(),
-                )
-            }),
-        )
-        .route(
-            "/manager.css",
-            get(|| async {
-                (
-                    [
-                        (header::CONTENT_TYPE, "text/css; charset=utf-8"),
-                        (header::CACHE_CONTROL, "no-cache"),
-                    ],
-                    include_str!("../manager.css"),
-                )
-            }),
-        )
-        .route(
-            "/manager.js",
-            get(|| async {
-                (
-                    [
-                        (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
-                        (header::CACHE_CONTROL, "no-cache"),
-                    ],
-                    include_str!("../manager.js"),
-                )
-            }),
-        )
-        .route(
-            "/app-icon.png",
-            get(|| async {
-                (
-                    [
-                        (header::CONTENT_TYPE, "image/png"),
-                        (header::CACHE_CONTROL, "public, max-age=86400"),
-                    ],
-                    include_bytes!("../../assets/cofleet-icon-256.png").as_slice(),
-                )
-            }),
-        )
-        .route("/healthz", get(|| async { "ok" }))
-        .route(
-            "/api/v1/auth-mode",
-            get(move || async move { Json(serde_json::json!({"auth":mode})) }),
-        )
-        .route("/api/whoami", get(whoami))
-        .route("/api/ws", get(ws))
-        .route(
-            "/api/v1/workspace-session",
-            post(workspace_session).delete(clear_workspace_session),
-        )
-        .route("/api/workspace-tunnel/{device}/{id}", get(workspace_tunnel))
-        .route("/applications/{device}", any(workspace_proxy))
-        .route("/applications/{device}/", any(workspace_proxy))
-        .route("/applications/{device}/{*path}", any(workspace_proxy))
-        .route("/workspaces/{device}", any(workspace_proxy))
-        .route("/workspaces/{device}/", any(workspace_proxy))
-        .route("/workspaces/{device}/{*path}", any(workspace_proxy))
-        .route("/api/v1/devices", get(devices))
-        .route("/api/v1/workloads", get(workloads).post(schedule_workload))
-        .route("/api/v1/workloads/{workload}", delete(remove_workload))
-        .route("/api/v1/devices/{device}/refresh", post(refresh))
-        .route("/api/v1/devices/{device}/docker", post(docker_command))
-        .route(
-            "/api/v1/devices/{device}/docker/catalog",
-            get(docker_catalog),
-        )
-        .route(
-            "/api/v1/devices/{device}/docker/containers/{container}/logs",
-            get(docker_logs),
-        )
-        .route(
-            "/api/v1/access-endpoints",
-            get(access_endpoints).post(create_endpoint),
-        )
-        .route(
-            "/api/v1/access-endpoints/{id}",
-            patch(patch_endpoint).delete(delete_endpoint),
-        )
-        .layer(DefaultBodyLimit::max(4096))
-        .with_state(app.clone());
+    let access_mode = if app.trusted_prefix {
+        "trusted_prefix"
+    } else if app.access_domain.is_some() {
+        "isolated_domain"
+    } else {
+        "disabled"
+    };
+    let routes =
+        Router::new()
+            .route("/", get(|| async { Html(include_str!("../manager.html")) }))
+            .route(
+                "/favicon.ico",
+                get(|| async {
+                    (
+                        [
+                            (header::CONTENT_TYPE, "image/vnd.microsoft.icon"),
+                            (header::CACHE_CONTROL, "public, max-age=86400"),
+                        ],
+                        include_bytes!("../../assets/favicon.ico").as_slice(),
+                    )
+                }),
+            )
+            .route(
+                "/manager.css",
+                get(|| async {
+                    (
+                        [
+                            (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+                            (header::CACHE_CONTROL, "no-cache"),
+                        ],
+                        include_str!("../manager.css"),
+                    )
+                }),
+            )
+            .route(
+                "/manager.js",
+                get(|| async {
+                    (
+                        [
+                            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+                            (header::CACHE_CONTROL, "no-cache"),
+                        ],
+                        include_str!("../manager.js"),
+                    )
+                }),
+            )
+            .route(
+                "/app-icon.png",
+                get(|| async {
+                    (
+                        [
+                            (header::CONTENT_TYPE, "image/png"),
+                            (header::CACHE_CONTROL, "public, max-age=86400"),
+                        ],
+                        include_bytes!("../../assets/cofleet-icon-256.png").as_slice(),
+                    )
+                }),
+            )
+            .route("/healthz", get(|| async { "ok" }))
+            .route(
+                "/api/v1/auth-mode",
+                get(move || async move {
+                    Json(serde_json::json!({"auth":mode,"access_mode":access_mode}))
+                }),
+            )
+            .route("/api/whoami", get(whoami))
+            .route("/api/v1/access-session", delete(manager_access::logout))
+            .route("/api/ws", get(ws))
+            .route(
+                "/api/v1/workspace-session",
+                post(workspace_session).delete(clear_workspace_session),
+            )
+            .route("/api/workspace-tunnel/{device}/{id}", get(workspace_tunnel))
+            .route("/applications/{device}", any(workspace_proxy))
+            .route("/applications/{device}/", any(workspace_proxy))
+            .route("/applications/{device}/{*path}", any(workspace_proxy))
+            .route("/workspaces/{device}", any(workspace_proxy))
+            .route("/workspaces/{device}/", any(workspace_proxy))
+            .route("/workspaces/{device}/{*path}", any(workspace_proxy))
+            .route("/api/v1/devices", get(devices))
+            .route("/api/v1/workloads", get(workloads).post(schedule_workload))
+            .route("/api/v1/workloads/{workload}", delete(remove_workload))
+            .route("/api/v1/devices/{device}/refresh", post(refresh))
+            .route("/api/v1/devices/{device}/docker", post(docker_command))
+            .route(
+                "/api/v1/devices/{device}/docker/catalog",
+                get(docker_catalog),
+            )
+            .route(
+                "/api/v1/devices/{device}/docker/containers/{container}/logs",
+                get(docker_logs),
+            )
+            .route(
+                "/api/v1/access-endpoints",
+                get(access_endpoints).post(create_endpoint),
+            )
+            .route(
+                "/api/v1/access-endpoints/{id}",
+                patch(patch_endpoint).delete(delete_endpoint),
+            )
+            .layer(DefaultBodyLimit::max(4096))
+            .with_state(app.clone());
     let routes = Router::new().fallback(dispatch).with_state(Front {
         app,
         management: routes,

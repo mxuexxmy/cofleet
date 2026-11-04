@@ -1,0 +1,5 @@
+# First build the root LPK to refresh .local/lpk-content with the current manager.
+manifest: ./lzc-manifest.yml
+contentdir: ../../.local/lpk-content
+icon: ../../assets/cofleet-icon-256.png
+pkgout: ../../dist

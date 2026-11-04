@@ -15,6 +15,7 @@ pub fn reserved_cookie(name: &str) -> bool {
         name.as_str(),
         "lzc-auth-token" | "hc-auth-token" | "__host-cofleet_access"
     ) || name.starts_with("cofleet_")
+        || name.starts_with("__host-cofleet_")
 }
 fn remove_hop(headers: &mut HeaderMap) {
     let fields: Vec<String> = headers
@@ -80,7 +81,10 @@ pub fn request_headers(
             || key.starts_with("x_lzc")
             || key.starts_with("x-cofleet")
             || key.starts_with("x-forwarded-")
-            || matches!(key, "forwarded" | "cookie" | "lzc-misc-auth-token")
+            || matches!(
+                key,
+                "forwarded" | "cookie" | "lzc-misc-auth-token" | "lzc-api-auth-token"
+            )
         {
             headers.remove(name);
         }

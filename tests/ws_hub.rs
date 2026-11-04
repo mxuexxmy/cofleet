@@ -25,6 +25,9 @@ impl Drop for Manager {
 }
 impl Manager {
     async fn start(trusted: &str) -> Self {
+        Self::start_mode(trusted, false).await
+    }
+    async fn start_mode(trusted: &str, prefix: bool) -> Self {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
@@ -40,9 +43,16 @@ impl Manager {
                 trusted,
                 "--state-dir",
                 state_dir.to_str().unwrap(),
-                "--access-domain",
-                "apps.example.net",
             ])
+            .args(if prefix {
+                vec![
+                    "--trusted-app-prefix",
+                    "--management-domain",
+                    "cofleet.box.test",
+                ]
+            } else {
+                vec!["--access-domain", "apps.example.net"]
+            })
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -441,4 +451,161 @@ async fn observation_results_and_persisted_endpoint_api_are_owner_scoped() {
         .unwrap();
     assert_eq!(alice.as_array().unwrap().len(), 1);
     assert_eq!(bob, serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn trusted_prefix_requires_owner_browser_session_and_single_use_grant() {
+    let manager = Manager::start_mode("127.0.0.1", true).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let device = Uuid::new_v4();
+    let mut observed = state(device, "trusted observer");
+    observed.docker_observe = Some(cofleet::docker_observe::ObserveCapability {
+        environment_id: "local-test".into(),
+        catalog_page_limit: 50,
+        log_line_limit: 500,
+        endpoint_tunnel: true,
+    });
+    let mut request = manager.ws_request("alice");
+    request
+        .headers_mut()
+        .insert("host", "cofleet.box.test".parse().unwrap());
+    let (mut agent, _) = connect_async(request).await.unwrap();
+    send(
+        &mut agent,
+        AgentMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            state: observed,
+        },
+    )
+    .await;
+    receive(&mut agent).await;
+    let id = Uuid::new_v4();
+    let body = serde_json::json!({"id":id,"device_id":device,"environment_id":"local-test","binding":{"kind":"container","container_id":"a".repeat(64)},"container_port":8080,"protocol":"http","name":"trusted fixture","trusted_application":true});
+    let create = |cookie: String| {
+        client
+            .post(format!("{}/api/v1/access-endpoints", manager.url))
+            .header("host", "cofleet.box.test")
+            .header("x-hc-user-id", "alice")
+            .header("x-cofleet-request", "1")
+            .header("origin", "https://cofleet.box.test")
+            .header("cookie", cookie)
+            .json(&body)
+    };
+    assert_eq!(create(String::new()).send().await.unwrap().status(), 403);
+    let root = client
+        .get(format!("{}/", manager.url))
+        .header("host", "cofleet.box.test")
+        .header("x-hc-user-id", "alice")
+        .send()
+        .await
+        .unwrap();
+    let manager_cookie = root.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let call = tokio::spawn(create(manager_cookie.clone()).send());
+    let HubMessage::ObserveCommand { call_id, .. } = receive(&mut agent).await else {
+        panic!("authorization expected")
+    };
+    let reply = cofleet::docker_observe::ObserveReply::Authorized {
+        resolution: cofleet::docker_observe::AccessResolution {
+            container_id: "a".repeat(64),
+            host: "127.0.0.1".into(),
+            port: 18081,
+            rebound: false,
+        },
+    };
+    send(
+        &mut agent,
+        AgentMessage::ObserveChunk {
+            call_id,
+            index: 0,
+            final_chunk: true,
+            payload: serde_json::to_string(&reply).unwrap(),
+        },
+    )
+    .await;
+    let response = call.await.unwrap().unwrap();
+    assert_eq!(response.status(), 201);
+    let endpoint: serde_json::Value = response.json().await.unwrap();
+    let authority = format!("e-{}-cofleet.box.test", id.simple());
+    assert_eq!(endpoint["public_url"], format!("https://{authority}/"));
+    let app_get = |user: &str| {
+        client
+            .get(format!("{}/", manager.url))
+            .header("host", &authority)
+            .header("x-hc-user-id", user)
+    };
+    assert_eq!(app_get("bob").send().await.unwrap().status(), 404);
+    let start = app_get("alice").send().await.unwrap();
+    assert_eq!(start.status(), 303);
+    let bootstrap = start.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let location = start.headers()["location"].to_str().unwrap();
+    let challenge = location.split("challenge=").nth(1).unwrap();
+    let issued = client
+        .post(format!("{}/access/authorize", manager.url))
+        .header("host", "cofleet.box.test")
+        .header("x-hc-user-id", "alice")
+        .header("cookie", &manager_cookie)
+        .header("origin", "https://cofleet.box.test")
+        .form(&[("challenge", challenge)])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(issued.status(), 200);
+    let html = issued.text().await.unwrap();
+    let ticket = html
+        .split("name=\"ticket\" value=\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap();
+    let redeem = || {
+        client
+            .post(format!("{}/.cofleet/accept", manager.url))
+            .header("host", &authority)
+            .header("x-hc-user-id", "alice")
+            .header("origin", "https://cofleet.box.test")
+            .header("cookie", &bootstrap)
+            .form(&[("ticket", ticket)])
+    };
+    let accepted = redeem().send().await.unwrap();
+    assert_eq!(accepted.status(), 303);
+    assert!(
+        accepted
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .any(|v| v.to_str().unwrap().starts_with("__Host-cofleet_access="))
+    );
+    assert_eq!(redeem().send().await.unwrap().status(), 403);
+    let unknown = client
+        .get(format!("{}/api/v1/devices", manager.url))
+        .header("host", "unknown-cofleet.box.test")
+        .header("x-hc-user-id", "alice")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), 404);
+    let app_api = client
+        .get(format!("{}/api/v1/devices", manager.url))
+        .header("host", &authority)
+        .header("x-hc-user-id", "alice")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(app_api.status(), 303); // Authorization gate, never the management JSON.
 }

@@ -181,6 +181,7 @@ impl EndpointStore {
                     enabled INTEGER NOT NULL, revision INTEGER NOT NULL,
                     public_url TEXT NOT NULL, created_unix INTEGER NOT NULL, updated_unix INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS trusted_access_endpoints(endpoint_id TEXT PRIMARY KEY, owner TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS access_endpoints_owner ON access_endpoints(owner);")?;
             let version: i64 = conn.query_row("SELECT version FROM schema_version", [], |r| r.get(0))?;
             ensure!(version == 1, "unsupported endpoint database schema");
@@ -217,6 +218,28 @@ impl EndpointStore {
     pub async fn find_public_host(&self, host: &str) -> Result<Option<AccessEndpoint>> {
         let expected = format!("https://{}/", host.to_ascii_lowercase());
         self.run(move |conn| conn.query_row("SELECT id,owner,device_id,environment_id,binding_json,container_port,protocol,tls_server_name,name,management_url,enabled,revision,public_url,created_unix,updated_unix FROM access_endpoints WHERE public_url=?", [expected], row_endpoint).optional().map_err(Into::into)).await
+    }
+    pub async fn trust(&self, owner: &str, id: Uuid) -> Result<()> {
+        let owner = owner.to_owned();
+        self.run(move |conn| {
+            ensure!(
+                conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM access_endpoints WHERE id=? AND owner=?)",
+                    params![id.to_string(), owner],
+                    |r| r.get::<_, bool>(0)
+                )?,
+                "endpoint not owned"
+            );
+            conn.execute(
+                "INSERT OR IGNORE INTO trusted_access_endpoints(endpoint_id,owner) VALUES(?,?)",
+                params![id.to_string(), owner],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+    pub async fn is_trusted(&self, id: Uuid) -> Result<bool> {
+        self.run(move |conn|conn.query_row("SELECT EXISTS(SELECT 1 FROM trusted_access_endpoints t JOIN access_endpoints e ON t.endpoint_id=e.id AND t.owner=e.owner WHERE e.id=?)",[id.to_string()],|r|r.get(0)).map_err(Into::into)).await
     }
     pub async fn create(
         &self,
@@ -279,6 +302,12 @@ impl EndpointStore {
                     |r| r.get(0),
                 )?;
                 ensure!(!exists, "endpoint revision conflict");
+            }
+            if changed == 1 {
+                conn.execute(
+                    "DELETE FROM trusted_access_endpoints WHERE endpoint_id=? AND owner=?",
+                    params![id.to_string(), owner],
+                )?;
             }
             Ok(changed == 1)
         })
@@ -345,6 +374,30 @@ mod tests {
             name: "app".into(),
             management_url: None,
         }
+    }
+    #[tokio::test]
+    async fn trusted_consent_is_owned_persistent_and_removed_with_endpoint() {
+        let dir = std::env::temp_dir().join(format!("cofleet-trust-test-{}", Uuid::new_v4()));
+        let store = EndpointStore::open(&dir).await.unwrap();
+        let id = Uuid::new_v4();
+        store
+            .create("alice", request(id), format!("https://e-{id}.example/"))
+            .await
+            .unwrap();
+        assert!(!store.is_trusted(id).await.unwrap());
+        assert!(store.trust("bob", id).await.is_err());
+        store.trust("alice", id).await.unwrap();
+        assert!(
+            EndpointStore::open(&dir)
+                .await
+                .unwrap()
+                .is_trusted(id)
+                .await
+                .unwrap()
+        );
+        assert!(store.delete("alice", id, 1).await.unwrap());
+        assert!(!store.is_trusted(id).await.unwrap());
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[tokio::test]
     async fn sqlite_create_is_idempotent_and_revision_guarded() {

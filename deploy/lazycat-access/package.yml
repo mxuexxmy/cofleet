@@ -1,0 +1,15 @@
+package: xyz.mxue.lzc.app.cofleet.access
+version: "0.7.1"
+name: 聚机应用访问验证
+description: 自动前缀域名与受信任 Docker 应用访问验证工作台
+min_os_version: "1.6.0"
+permissions:
+  required: []
+  optional: []
+locales:
+  zh-CN:
+    name: 聚机应用访问验证
+    description: 受信任应用入口、登录与 WebSocket 验证
+  en-US:
+    name: CoFleet Access Verification
+    description: Trusted application access verification

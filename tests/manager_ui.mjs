@@ -24,7 +24,7 @@ const requests = [], plans = [], endpoints = [];
 const server = http.createServer(async (req, res) => {
   const pathname = new URL(req.url, 'http://localhost').pathname;
   const json = (value, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
-  if (pathname === '/api/v1/auth-mode') return json({ auth: 'development' });
+  if (pathname === '/api/v1/auth-mode') return json({ auth: 'development', access_mode: 'trusted_prefix' });
   if (pathname === '/api/v1/workspace-session') return json({});
   if (pathname === '/api/v1/devices') return json(nodes, unavailable ? 503 : 200);
   if (pathname === '/api/v1/workloads') {
@@ -151,7 +151,7 @@ try {
   for (const width of [1440, 1024, 390]) { await page.setViewportSize({ width, height: 1000 }); await page.screenshot({ path: new URL('docker-observe-' + width + '.png', output).pathname, fullPage: true }); assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)); }
   await page.setViewportSize({ width: 1440, height: 1100 });
 
-  await page.locator('#endpoint-name').fill('家庭相册'); await page.locator('#endpoint-submit').click(); await page.locator('#endpoint-list .endpoint-row').waitFor(); assert.match(await page.locator('#endpoint-list .endpoint-row').innerText(), /家庭相册/);
+  await page.locator('#endpoint-name').fill('家庭相册'); assert.equal(await page.locator('#endpoint-submit').isDisabled(), true); await page.locator('#endpoint-trust').check(); await page.locator('#endpoint-submit').click(); await page.locator('#endpoint-list .endpoint-row').waitFor(); assert.match(await page.locator('#endpoint-list .endpoint-row').innerText(), /家庭相册/);
   await page.getByRole('button', { name: '禁用', exact: true }).click(); await page.getByRole('button', { name: '启用', exact: true }).waitFor();
   await page.locator('#nav-scheduler').click(); await page.locator('#schedule-memory').fill('2048'); await page.evaluate(() => refresh()); assert.equal(await page.locator('#schedule-memory').inputValue(), '2048');
   await page.locator('#schedule-submit').click(); await page.locator('.workload-row').waitFor(); assert.match(await page.locator('#schedule-notice').innerText(), /已选择匹配节点/);
