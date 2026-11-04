@@ -19,7 +19,7 @@ const node = (id, name, extra = {}) => ({ device_id: id, name, os: 'linux', arch
     { id: 'build-failed', request: { action: 'build' }, status: 'failed', error: 'Dockerfile 构建失败，请查看日志。' }
   ] }, ...extra });
 let nodes = [node('dev-a', '家中的开发主机'), node('dev-b', '随身电脑'), node('dev-c', '一台名称很长的 Windows 与 WSL 协作电脑用于测试换行', { online: false, workspace: null })];
-let unavailable = false, loseOperation = false;
+let unavailable = false, loseOperation = false, logDelay = 0;
 const requests = [], plans = [], endpoints = [];
 const server = http.createServer(async (req, res) => {
   const pathname = new URL(req.url, 'http://localhost').pathname;
@@ -42,8 +42,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'DELETE') { endpoints.splice(index, 1); res.writeHead(204); return res.end(); }
     let body = ''; for await (const chunk of req) body += chunk; const change = JSON.parse(body); endpoints[index] = { ...endpoints[index], ...change, revision: endpoints[index].revision + 1 }; return json(endpoints[index]);
   }
-  if (pathname.endsWith('/docker/catalog')) return json({ result: 'catalog', page: { environment_id: 'local-fixture', snapshot_id: '00000000-0000-4000-8000-000000000001', sampled_at_unix: now, next_cursor: null, containers: [{ id: 'a'.repeat(64), name: 'photos', image: 'photos:latest', state: 'running', health: 'healthy', compose_project: 'home', compose_service: 'photos', compose_oneoff: false, ports: [{ container_port: 8080, host_ip: '127.0.0.1', host_port: 18080, supported: true }] }] } });
-  if (pathname.includes('/docker/containers/') && pathname.endsWith('/logs')) return json({ result: 'logs', value: { container_id: 'a'.repeat(64), collected_at_unix: now, logs: 'existing application log', truncated: false } });
+  if (pathname.endsWith('/docker/catalog')) return json({ result: 'catalog', page: { environment_id: 'local-fixture', snapshot_id: '00000000-0000-4000-8000-000000000001', sampled_at_unix: now, next_cursor: null, containers: [{ id: 'a'.repeat(64), name: 'photos', image: 'photos:latest', state: 'running', health: 'healthy', compose_project: 'home', compose_service: 'photos', compose_oneoff: false, ports: [{ container_port: 8080, host_ip: '127.0.0.1', host_port: 18080, supported: true }] }, { id: 'b'.repeat(64), name: 'background-worker', image: 'worker:1', state: 'exited', health: null, compose_project: null, compose_service: null, ports: [] }] } });
+  if (pathname.includes('/docker/containers/') && pathname.endsWith('/logs')) { if (logDelay) await new Promise(resolve => setTimeout(resolve, logDelay)); return json({ result: 'logs', value: { container_id: 'a'.repeat(64), collected_at_unix: now, logs: 'existing application log', truncated: false } }); }
   if (pathname.endsWith('/docker')) {
     let body = ''; for await (const chunk of req) body += chunk;
     const action = JSON.parse(body); requests.push(action);
@@ -88,16 +88,16 @@ try {
   assert.match(await page.locator('.confirmation').innerText(), /release-/);
   const before = requests.length; await page.getByRole('button', { name: '取消', exact: true }).click(); assert.equal(requests.length, before);
   await page.getByRole('button', { name: '读取日志 build-on', exact: true }).click();
-  await page.locator('.container-logs').waitFor();
-  await page.locator('.container-logs').evaluate(log => { window.originalLog = log; log.scrollTop = 120; });
+  await page.locator('#details .container-logs').waitFor();
+  await page.locator('#details .container-logs').evaluate(log => { window.originalLog = log; log.scrollTop = 120; });
   await page.evaluate(() => refresh());
-  assert.ok(await page.locator('.container-logs').evaluate(log => log === window.originalLog && log.scrollTop === 120));
-  await page.locator('.logs-disclosure summary').click(); await page.evaluate(() => refresh());
-  assert.equal(await page.locator('.logs-disclosure').evaluate(detail => detail.open), false);
+  assert.ok(await page.locator('#details .container-logs').evaluate(log => log === window.originalLog && log.scrollTop === 120));
+  await page.locator('#details .logs-disclosure summary').click(); await page.evaluate(() => refresh());
+  assert.equal(await page.locator('#details .logs-disclosure').evaluate(detail => detail.open), false);
   await page.locator('#tab-overview').click(); await page.locator('#tab-pipeline').click();
-  assert.equal(await page.locator('.logs-disclosure').evaluate(detail => detail.open), false);
-  await page.locator('.logs-disclosure summary').click();
-  assert.equal(await page.locator('.container-logs').evaluate(log => log.scrollTop), 120);
+  assert.equal(await page.locator('#details .logs-disclosure').evaluate(detail => detail.open), false);
+  await page.locator('#details .logs-disclosure summary').click();
+  assert.equal(await page.locator('#details .container-logs').evaluate(log => log.scrollTop), 120);
   await page.locator('#tab-workspace').click();
   await page.getByRole('button', { name: '停止开发空间', exact: true }).click();
   assert.match(await page.locator('.confirmation').innerText(), /保留/);
@@ -112,7 +112,7 @@ try {
   assert.equal(requests.at(-1).request.request_id, lostId);
   await page.locator('#tab-docker').click(); await page.getByRole('button', { name: '启动测试容器', exact: true }).click();
   await page.waitForFunction(() => !dockerViews.get('dev-a').busy); assert.equal(requests.at(-1).action, 'set_test');
-  await page.getByRole('button', { name: '读取测试日志', exact: true }).click(); await page.locator('.container-logs').waitFor();
+  await page.getByRole('button', { name: '读取测试日志', exact: true }).click(); await page.locator('#details .container-logs').waitFor();
   await page.locator('#tab-overview').click(); await page.locator('.technical-details summary').click(); await page.evaluate(() => refresh());
   assert.equal(await page.locator('.technical-details').evaluate(detail => detail.open), true);
   await page.locator('#online-only').check();
@@ -123,9 +123,35 @@ try {
   assert.equal(await page.locator('.device').count(), 3);
   unavailable = false; nodes[0].resources.age_secs = 20; await page.evaluate(() => refresh()); assert.match(await page.locator('#details').innerText(), /采集暂未更新/);
   await page.locator('#tab-overview').focus(); await page.keyboard.press('ArrowRight'); assert.equal(await page.locator('#tab-workspace').getAttribute('aria-selected'), 'true');
-  await page.locator('#nav-applications').click(); await page.locator('#endpoint-discover').click(); await page.locator('#endpoint-target option').nth(1).waitFor(); await page.locator('#endpoint-target').selectOption({ index: 1 });
-  await page.locator('#endpoint-logs').click(); assert.match(await page.locator('#observed-logs').innerText(), /existing application log/);
-  await page.locator('#endpoint-name').fill('家庭相册'); await page.locator('#endpoint-submit').click(); await page.locator('.endpoint-row').waitFor(); assert.match(await page.locator('.endpoint-row').innerText(), /家庭相册/);
+  await page.locator('#nav-applications').click(); await page.locator('#endpoint-discover').click(); await page.locator('#endpoint-target option').nth(1).waitFor({ state: 'attached' }); await page.locator('#endpoint-target').selectOption({ index: 1 });
+  await page.locator('#endpoint-logs').click(); await page.waitForFunction(() => document.querySelector('#observed-logs').textContent.includes('existing application log')); assert.match(await page.locator('#observed-logs').innerText(), /existing application log/);
+  assert.match(await page.locator('#observe-containers').innerText(), /background-worker/);
+  assert.match(await page.locator('#observe-containers').innerText(), /Compose 项目：home/);
+  await page.locator('#observe-search').fill('background');
+  assert.equal(await page.locator('#observe-containers .endpoint-row').count(), 1);
+  assert.equal(await page.locator('#observe-containers button').isEnabled(), true);
+  await page.evaluate(() => refresh());
+  assert.equal(await page.locator('#observe-search').inputValue(), 'background');
+  await page.locator('#observe-search').fill('no-match');
+  assert.match(await page.locator('#observe-containers').innerText(), /没有符合/);
+  await page.locator('#observe-search').fill('');
+  await page.locator('#observe-state').selectOption('exited');
+  assert.equal(await page.locator('#observe-containers .endpoint-row').count(), 1);
+  await page.locator('#observe-state').selectOption('');
+  await page.locator('#endpoint-device').selectOption('dev-b');
+  assert.equal(await page.locator('#observed-logs').isVisible(), false);
+  await page.locator('#endpoint-device').selectOption('dev-a');
+  assert.equal(await page.locator('#observed-logs').isVisible(), true);
+  logDelay = 350;
+  await page.locator('#endpoint-logs').click();
+  await page.evaluate(() => refresh());
+  await page.waitForFunction(() => !endpointBusy);
+  assert.match(await page.locator('#observed-logs').innerText(), /existing application log/);
+  logDelay = 0;
+  for (const width of [1440, 1024, 390]) { await page.setViewportSize({ width, height: 1000 }); await page.screenshot({ path: new URL('docker-observe-' + width + '.png', output).pathname, fullPage: true }); assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)); }
+  await page.setViewportSize({ width: 1440, height: 1100 });
+
+  await page.locator('#endpoint-name').fill('家庭相册'); await page.locator('#endpoint-submit').click(); await page.locator('#endpoint-list .endpoint-row').waitFor(); assert.match(await page.locator('#endpoint-list .endpoint-row').innerText(), /家庭相册/);
   await page.getByRole('button', { name: '禁用', exact: true }).click(); await page.getByRole('button', { name: '启用', exact: true }).waitFor();
   await page.locator('#nav-scheduler').click(); await page.locator('#schedule-memory').fill('2048'); await page.evaluate(() => refresh()); assert.equal(await page.locator('#schedule-memory').inputValue(), '2048');
   await page.locator('#schedule-submit').click(); await page.locator('.workload-row').waitFor(); assert.match(await page.locator('#schedule-notice').innerText(), /已选择匹配节点/);
@@ -141,7 +167,7 @@ try {
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await page.locator('.mobile-back').click(); assert.equal(await page.locator('.fleet').isVisible(), true);
   nodes = [node('bare', '未配置的设备', { workspace: null, pipeline: null, docker: null })]; await page.evaluate(() => refresh()); await page.locator('.device').click(); await page.locator('#tab-workspace').click(); assert.match(await page.locator('#device-panel').innerText(), /未启用/);
-  await page.locator('#logout').click(); assert.equal(await page.locator('#search').inputValue(), '');
+  await page.locator('#logout').click(); assert.equal(await page.evaluate(() => observedCatalogs.size + observedLogs.size + observedTargets.size), 0); assert.equal(await page.locator('#search').inputValue(), '');
   nodes = []; await page.locator('#token').fill('fixture-token'); await page.locator('#login button').click(); await page.waitForFunction(() => fresh); assert.match(await page.locator('#empty').innerText(), /启动 Agent/);
   assert.deepEqual(errors, []);
   console.log('PASS navigation, live polling focus/caret, per-device drafts, build selection, log scroll/disclosure, confirmations, request-ID retry, stale/offline states, schedule feedback, mobile, empty states, logout');

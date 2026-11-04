@@ -8,6 +8,9 @@ const pipelineViews = new Map();
 let dockerEpoch = 0;
 let pendingSchedule = null, submittingSchedule = false;
 const observedCatalogs = new Map();
+const observedLogs = new Map();
+const observedTargets = new Map();
+let observeController = null, observeSession = 0;
 let endpointBusy = false;
 const osNames = { linux: 'Linux', windows: 'Windows', macos: 'macOS' };
 
@@ -506,12 +509,13 @@ function renderApplications() {
     const option = el('option', '', (container.compose_project ? container.compose_project + ' / ' + container.compose_service : container.name) + ' · ' + port.container_port + '→' + port.host_port);
     option.value = container.id + ':' + port.container_port; targetSelect.append(option);
   }
-  const previousTarget = $('#endpoint-target').value; if ([...targetSelect.options].some(option => option.value === previousTarget)) targetSelect.value = previousTarget;
-  targetSelect.onchange = () => { const selected = selectedObserved(); if (selected && !selected.container.compose_project) $('#endpoint-binding').value = 'container'; };
+  const previousTarget = observedTargets.get(deviceId) || ''; if ([...targetSelect.options].some(option => option.value === previousTarget)) targetSelect.value = previousTarget;
+  targetSelect.onchange = () => { observedTargets.set(deviceId, $('#endpoint-target').value); const selected = selectedObserved(); if (selected && !selected.container.compose_project) $('#endpoint-binding').value = 'container'; renderApplications(); };
   commit($('#endpoint-target'), targetSelect);
-  $('#endpoint-discover').disabled = endpointBusy || !fresh || !deviceId;
-  $('#endpoint-logs').disabled = endpointBusy || !fresh || !selectedObserved();
-  $('#endpoint-submit').disabled = endpointBusy || !fresh || !deviceId || !catalog;
+  const available = fresh && devices.some(device => device.device_id === deviceId && device.online && device.docker_observe);
+  $('#endpoint-discover').disabled = endpointBusy || !available;
+  $('#endpoint-logs').disabled = endpointBusy || !available || !selectedObserved();
+  $('#endpoint-submit').disabled = endpointBusy || !available || !catalog;
   const area = el('div', 'endpoint-list'); area.id = 'endpoint-list';
   if (!endpoints.length) area.append(el('p', '', fresh ? '尚未添加应用入口。' : '连接后读取入口。'));
   for (const endpoint of endpoints) {
@@ -527,14 +531,61 @@ function renderApplications() {
     row.append(copy, actions); if (endpoint.detail) row.append(el('p', 'resource-warning', endpoint.detail)); area.append(row);
   }
   commit($('#endpoint-list'), area);
+  renderObserved(deviceId, catalog, available);
 }
 function selectedObserved() { const [id, port] = $('#endpoint-target').value.split(':'); const container = observedCatalogs.get($('#endpoint-device').value)?.containers.find(value => value.id === id); return container && port ? { container, port: Number(port) } : null; }
-async function discoverContainers() {
-  const deviceId = $('#endpoint-device').value; if (!deviceId || endpointBusy) return; endpointBusy = true; endpointNotice('正在读取容器与已发布端口…'); renderApplications();
-  try { let cursor = null, containers = [], environment = null; do { const url = new URL('api/v1/devices/' + deviceId + '/docker/catalog', location.href); url.searchParams.set('limit', '50'); if (cursor) url.searchParams.set('cursor', cursor); const response = await fetch(url, { headers: platformLogin ? {} : { Authorization: 'Bearer ' + token }, cache: 'no-store', redirect: 'error' }); if (!response.ok) throw new Error('读取容器失败（' + response.status + '）。请确认 Agent 使用 --docker-observe 启动。'); const result = await response.json(); if (result.result === 'error') throw new Error(result.message); if (result.result !== 'catalog') throw new Error('无法识别容器目录响应。'); environment = result.page.environment_id; containers.push(...result.page.containers); cursor = result.page.next_cursor; } while (cursor && containers.length < 500); observedCatalogs.set(deviceId, { environment_id: environment, containers }); endpointNotice('已读取 ' + containers.length + ' 个容器；只显示受支持的已发布 TCP 端口。'); }
-  catch (error) { endpointNotice(error.message, true); } finally { endpointBusy = false; renderApplications(); }
+function renderObserved(deviceId, catalog, available) {
+  const area = el('div'); area.id = 'observe-containers';
+  const query = $('#observe-search').value.trim().toLowerCase(), state = $('#observe-state').value;
+  const containers = (catalog?.containers || []).filter(c => (!state || c.state === state) && [c.name, c.image, c.compose_project, c.compose_service, c.id].join(' ').toLowerCase().includes(query));
+  $('#observe-summary').textContent = !available ? '设备离线、连接待确认或未启用观察。请在本机使用 --docker-observe 启动 Agent。' : !catalog ? '读取容器后，可查看所有容器，包括没有发布端口的应用。' : '上次读取 ' + new Date(catalog.sampled_at_unix * 1000).toLocaleTimeString() + ' · ' + catalog.containers.length + ' 个容器（手动刷新）';
+  if (catalog && !containers.length) area.append(el('p', '', catalog.containers.length ? '没有符合筛选条件的容器。' : '当前 Docker 环境没有容器。'));
+  let group = null;
+  for (const c of containers) {
+    const title = c.compose_project ? 'Compose 项目：' + c.compose_project : '独立容器 / 缺少 Compose 标签';
+    if (group !== title) { area.append(el('h3', '', title)); group = title; }
+    const row = el('article', 'endpoint-row'); row.dataset.key = c.id;
+    const copy = el('div'); copy.append(el('strong', '', c.name), el('small', '', c.state + (c.health ? ' / ' + c.health : '') + (c.compose_service ? ' · 服务 ' + c.compose_service : '')), el('code', '', c.image));
+    copy.append(el('p', '', c.ports.length ? c.ports.map(p => p.host_ip + ':' + p.host_port + ' → ' + p.container_port + (p.supported ? '' : '（不支持转发：指定网卡）')).join('；') : '没有已发布的 TCP 端口；仍可查看日志。'));
+    const button = el('button', 'secondary', '查看日志'); button.disabled = endpointBusy || !available; button.onclick = () => readObservedLogs(deviceId, c.id, c.name); row.append(copy, button); area.append(row);
+  }
+  commit($('#observe-containers'), area);
+  const saved = observedLogs.get(deviceId), details = $('#observed-logs');
+  details.hidden = !saved;
+  if (saved) { details.querySelector('summary').textContent = saved.name + ' · ' + new Date(saved.collected_at_unix * 1000).toLocaleTimeString() + (saved.truncated ? '（已截断，仅显示末尾）' : ''); const pre = details.querySelector('pre'); if (pre.textContent !== saved.logs) { pre.textContent = saved.logs; pre.scrollTop = saved.scroll || 0; } pre.onscroll = () => { saved.scroll = pre.scrollTop; }; }
+  else details.querySelector('pre').textContent = '';
 }
-async function readObservedLogs(deviceId, containerId, name) { if (endpointBusy) return; endpointBusy = true; endpointNotice('正在读取 ' + name + ' 的最近日志…'); try { const response = await fetch('api/v1/devices/' + deviceId + '/docker/containers/' + containerId + '/logs?tail=100', { headers: platformLogin ? {} : { Authorization: 'Bearer ' + token }, redirect: 'error' }); const result = await response.json(); if (!response.ok || result.result === 'error') throw new Error(result.message || '读取日志失败（' + response.status + '）。'); const details = $('#observed-logs'); details.hidden = false; details.open = true; details.querySelector('summary').textContent = name + ' · 最近日志' + (result.value.truncated ? '（已截断）' : ''); details.querySelector('pre').textContent = result.value.logs || '暂无日志。'; endpointNotice('日志读取完成。'); } catch (error) { endpointNotice(error.message, true); } finally { endpointBusy = false; renderApplications(); } }
+async function observeFetch(path, signal) {
+  const response = await fetch(path, { headers: platformLogin ? {} : { Authorization: 'Bearer ' + token }, signal, cache: 'no-store', redirect: 'error' });
+  if (!response.ok) throw new Error('读取失败（' + response.status + '）。请检查设备连接和观察权限后重试。');
+  const result = await response.json(); if (result.result === 'error') throw new Error(result.message); return result;
+}
+async function discoverContainers() {
+  const deviceId = $('#endpoint-device').value; if (!deviceId || endpointBusy) return;
+  const epoch = observeSession; endpointBusy = true; observeController = new AbortController(); const signal = AbortSignal.any([observeController.signal, AbortSignal.timeout(60000)]);
+  endpointNotice('正在读取容器与已发布端口…'); renderApplications();
+  try { let cursor = null, containers = [], environment = null, sampled = null, snapshot = null;
+    do { const url = new URL('api/v1/devices/' + deviceId + '/docker/catalog', location.href); url.searchParams.set('limit', '50'); if (cursor) url.searchParams.set('cursor', cursor);
+      const result = await observeFetch(url, signal); if (epoch !== observeSession) return;
+      if (result.result !== 'catalog' || (snapshot && snapshot !== result.page.snapshot_id)) throw new Error('容器快照变化，请重新读取。');
+      environment = result.page.environment_id; sampled = result.page.sampled_at_unix; snapshot = result.page.snapshot_id; containers.push(...result.page.containers); cursor = result.page.next_cursor;
+    } while (cursor && containers.length < 500);
+    observedCatalogs.set(deviceId, { environment_id: environment, sampled_at_unix: sampled, containers }); if ($('#endpoint-device').value === deviceId) endpointNotice('已读取 ' + containers.length + ' 个容器。');
+  } catch (error) { if (epoch === observeSession) endpointNotice(error.message, true); }
+  finally { if (epoch === observeSession) { endpointBusy = false; renderApplications(); } }
+}
+async function readObservedLogs(deviceId, containerId, name) {
+  if (endpointBusy) return; const epoch = observeSession; endpointBusy = true; observeController = new AbortController();
+  endpointNotice('正在读取 ' + name + ' 的最近日志…'); renderApplications();
+  try { const result = await observeFetch('api/v1/devices/' + deviceId + '/docker/containers/' + containerId + '/logs?tail=' + $('#observe-tail').value, AbortSignal.any([observeController.signal, AbortSignal.timeout(20000)]));
+    if (epoch !== observeSession) return; if (result.result !== 'logs' || result.value.container_id !== containerId) throw new Error('日志响应与所选容器不匹配。');
+    observedLogs.set(deviceId, { ...result.value, name, logs: result.value.logs || '暂无日志。', scroll: 0 });
+    if ($('#endpoint-device').value === deviceId) { $('#observed-logs').open = true; endpointNotice('日志读取完成。'); }
+  } catch (error) { if (epoch === observeSession) endpointNotice(error.message, true); }
+  finally { if (epoch === observeSession) { endpointBusy = false; renderApplications(); } }
+}
+$('#observe-search').oninput = () => renderApplications();
+$('#observe-state').onchange = () => renderApplications();
 async function updateEndpoint(endpoint, change) { endpointBusy = true; endpointNotice('正在保存入口…'); renderApplications(); try { const response = await fetch('api/v1/access-endpoints/' + endpoint.id, { method: 'PATCH', headers: requestHeaders(true), body: JSON.stringify({ revision: endpoint.revision, ...change }), redirect: 'error' }); if (!response.ok) throw new Error(await response.text() || '保存失败（' + response.status + '）。'); const saved = await response.json(); endpoints = endpoints.map(value => value.id === saved.id ? saved : value); endpointNotice('入口已保存；在线 Agent 将按新 revision 重新核验。'); } catch (error) { endpointNotice(error.message, true); } finally { endpointBusy = false; renderApplications(); } }
 async function removeEndpoint(endpoint) { if (!confirm('只删除 CoFleet 入口，不会删除原容器和数据。继续？')) return; endpointBusy = true; endpointNotice('正在删除入口…'); renderApplications(); try { const response = await fetch('api/v1/access-endpoints/' + endpoint.id + '?revision=' + endpoint.revision, { method: 'DELETE', headers: requestHeaders(), redirect: 'error' }); if (!response.ok) throw new Error(await response.text() || '删除失败（' + response.status + '）。'); endpoints = endpoints.filter(value => value.id !== endpoint.id); endpointNotice('入口已删除；原应用和数据未更改。'); } catch (error) { endpointNotice(error.message, true); } finally { endpointBusy = false; renderApplications(); } }
 $('#endpoint-discover').onclick = discoverContainers;
@@ -686,7 +737,7 @@ $('#login').onsubmit = event => {
 $('#logout').onclick = () => {
   dockerEpoch++; pendingSchedule = null; submittingSchedule = false; dockerViews.clear(); workspaceViews.clear(); pipelineViews.clear(); deviceViews.clear(); mobileDetail = false;
   if (token) fetch('api/v1/workspace-session', { method: 'DELETE', headers: { Authorization: 'Bearer ' + token, 'X-CoFleet-Request': '1' } }).catch(() => {});
-  generation++; controller?.abort(); token = ''; devices = []; workloads = []; endpoints = []; observedCatalogs.clear(); fresh = false; selectedId = null; lastRefresh = null;
+  generation++; controller?.abort(); token = ''; devices = []; workloads = []; endpoints = []; observeSession++; observedCatalogs.clear(); observedLogs.clear(); observedTargets.clear(); observeController?.abort(); endpointBusy = false; fresh = false; selectedId = null; lastRefresh = null;
   $('#login-panel').hidden = false; $('#logout').hidden = true; $('#refresh').disabled = true;
   resetInterface(); setConnection('已断开'); setNotice('凭据已从页面内存清除。'); render();
 };

@@ -338,6 +338,14 @@ fn persist(dir: &Path, desired: &Desired) -> Result<()> {
     result.context("Docker desired state persistence failed")
 }
 pub async fn docker(args: &[&str]) -> Result<String> {
+    docker_output(args, false).await.map(|(text, _)| text)
+}
+
+pub async fn docker_log_tail(args: &[&str]) -> Result<(String, bool)> {
+    docker_output(args, true).await
+}
+
+async fn docker_output(args: &[&str], log_tail: bool) -> Result<(String, bool)> {
     // Ignore remote contexts/DOCKER_HOST. Only a fixed local engine endpoint is allowed.
     #[cfg(target_os = "linux")]
     const LOCAL_DOCKER_HOST: &str = "unix:///var/run/docker.sock";
@@ -361,6 +369,17 @@ pub async fn docker(args: &[&str]) -> Result<String> {
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
+        if log_tail {
+            let (out, err, status) = tokio::join!(read_log_tail(stdout), read_log_tail(stderr), child.wait());
+            let (mut out, out_cut) = out?;
+            let (err, err_cut) = err?;
+            ensure!(status?.success(), "Cannot read container logs; check Docker permission, container existence and logging driver support");
+            out.extend_from_slice(&err);
+            let cut = out_cut || err_cut || out.len() > 16384;
+            let text = String::from_utf8_lossy(&out);
+            let start = text.ceil_char_boundary(text.len().saturating_sub(16384));
+            return Ok((text[start..].to_owned(), cut));
+        }
         let mut out = Vec::new();
         let mut err = Vec::new();
         let mut out_reader = stdout.take(262145);
@@ -377,21 +396,59 @@ pub async fn docker(args: &[&str]) -> Result<String> {
             out.len() <= 262144 && err.len() <= 8192,
             "Docker response too large"
         );
-        ensure!(
-            status.success(),
-            "Docker operation failed; check daemon, local image, or container state"
-        );
+        if !status.success() {
+            let diagnostic = String::from_utf8_lossy(&err).to_ascii_lowercase();
+            let reason = if diagnostic.contains("permission denied") {
+                "Docker permission denied; grant the local Agent user access to the Docker socket"
+            } else if diagnostic.contains("cannot connect") || diagnostic.contains("connection refused") {
+                "Docker daemon unavailable; start the local Docker engine"
+            } else if diagnostic.contains("no such") {
+                "Docker resource disappeared; refresh the container catalog"
+            } else {
+                "Docker operation failed; check daemon, local image, or container state"
+            };
+            anyhow::bail!("{reason}");
+        }
         if args.first() == Some(&"logs") {
             out.extend_from_slice(&err);
         }
-        Ok(String::from_utf8_lossy(&out).into_owned())
+        Ok((String::from_utf8_lossy(&out).into_owned(), false))
     })
     .await
     .context("Docker operation timed out; retry using the same request ID")?
 }
+// Drain both streams while retaining bounded tails. Large stderr is normal for Docker logs.
+async fn read_log_tail(mut stream: impl tokio::io::AsyncRead + Unpin) -> Result<(Vec<u8>, bool)> {
+    let mut tail = Vec::new();
+    let mut buffer = [0u8; 8192];
+    let mut truncated = false;
+    loop {
+        let n = stream.read(&mut buffer).await?;
+        if n == 0 {
+            break;
+        }
+        tail.extend_from_slice(&buffer[..n]);
+        if tail.len() > 16384 {
+            tail.drain(..tail.len() - 16384);
+            truncated = true;
+        }
+    }
+    Ok((tail, truncated))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn logs_drain_large_streams_and_keep_bounded_tail() {
+        let input = vec![b'x'; 400_000];
+        let (tail, cut) = read_log_tail(input.as_slice()).await.unwrap();
+        assert!(cut);
+        assert_eq!(tail.len(), 16384);
+        let (tail, cut) = read_log_tail(&b"small log"[..]).await.unwrap();
+        assert!(!cut);
+        assert_eq!(tail, b"small log");
+    }
+
     #[test]
     fn delayed_retry_cannot_undo_a_later_stop_and_conflicts_are_rejected() {
         let mut desired = Desired::default();

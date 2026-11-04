@@ -249,7 +249,18 @@ impl DockerObserver {
             offset <= cache.containers.len(),
             "invalid catalog cursor offset"
         );
-        let end = (offset + limit).min(cache.containers.len());
+        let mut end = offset;
+        while end < (offset + limit).min(cache.containers.len()) {
+            let bytes = serde_json::to_vec(&cache.containers[offset..=end])?.len();
+            if bytes > 80 * 1024 {
+                break;
+            }
+            end += 1;
+        }
+        ensure!(
+            end > offset || offset == cache.containers.len(),
+            "container metadata exceeds catalog page limit"
+        );
         let next_cursor = (end < cache.containers.len()).then(|| format!("{}:{end}", cache.id));
         Ok(CatalogPage {
             environment_id: inner.persisted.environment_id.clone(),
@@ -263,8 +274,8 @@ impl DockerObserver {
         validate_id(id)?;
         let tail = tail.clamp(1, 500).to_string();
         inspect_one(id).await?;
-        let output = crate::docker::docker(&["logs", "--tail", &tail, "--timestamps", id]).await?;
-        let (logs, truncated) = truncate_tail(&output, 64 * 1024);
+        let (logs, truncated) =
+            crate::docker::docker_log_tail(&["logs", "--tail", &tail, "--timestamps", id]).await?;
         Ok(ContainerLogs {
             container_id: id.into(),
             collected_at_unix: crate::protocol::unix_now(),
@@ -342,13 +353,28 @@ fn validate_id(id: &str) -> Result<()> {
 }
 async fn inspect_one(id: &str) -> Result<serde_json::Value> {
     validate_id(id)?;
-    let output = crate::docker::docker(&["inspect", "--format", "{{json .}}", id]).await?;
+    // Select fields at the engine; never retrieve environment variables or health log output.
+    const FORMAT: &str = r#"{
+      "Id":{{json .Id}}, "Name":{{json .Name}},
+      "Config":{"Image":{{json .Config.Image}},"Labels":{
+        "com.docker.compose.project":{{json (index .Config.Labels "com.docker.compose.project")}},
+        "com.docker.compose.service":{{json (index .Config.Labels "com.docker.compose.service")}},
+        "com.docker.compose.oneoff":{{json (index .Config.Labels "com.docker.compose.oneoff")}}
+      }},
+      "State":{"Status":{{json .State.Status}},"Health":{"Status":{{with (index .State "Health")}}{{json .Status}}{{else}}null{{end}}}},
+      "HostConfig":{"PortBindings":{{json .HostConfig.PortBindings}}}
+    }"#;
+    let output = crate::docker::docker(&["inspect", "--format", FORMAT, id]).await?;
     serde_json::from_str(output.trim()).context("invalid Docker inspect response")
 }
 async fn collect() -> Result<Vec<ObservedContainer>> {
     let output = crate::docker::docker(&["ps", "-a", "--no-trunc", "--format", "{{.ID}}"]).await?;
     let mut result = Vec::new();
-    for id in output.lines().take(500) {
+    ensure!(
+        output.lines().count() <= 500,
+        "Docker catalog exceeds 500 containers; narrow the local Docker environment"
+    );
+    for id in output.lines() {
         if !id.is_empty() {
             result.push(observed(inspect_one(id).await?)?);
         }
@@ -479,14 +505,6 @@ fn resolve_from(
         port: mapping.host_port,
         rebound: original.is_none(),
     })
-}
-fn truncate_tail(value: &str, limit: usize) -> (String, bool) {
-    if value.len() <= limit {
-        (value.into(), false)
-    } else {
-        let start = value.ceil_char_boundary(value.len() - limit);
-        (value[start..].into(), true)
-    }
 }
 fn persist(dir: &Path, value: &Persisted) -> Result<()> {
     use std::io::Write;

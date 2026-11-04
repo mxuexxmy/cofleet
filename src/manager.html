@@ -45,19 +45,25 @@
   <section id="applications-page" hidden>
     <div class="toolbar"><div><h1>已有 Docker 应用</h1><p>只读发现现有容器，为已发布的 HTTP 服务添加持久入口。</p></div><span class="section-note">部署与维护仍由原工具负责</span></div>
     <section class="scheduler-panel access-panel">
+      <div class="schedule-form"><label>电脑<select id="endpoint-device" required></select></label><div class="docker-actions"><button id="endpoint-discover" type="button">读取容器</button></div></div>
+      <section aria-label="容器资源">
+        <div class="schedule-form"><label>搜索容器<input id="observe-search" type="search" placeholder="名称、镜像或 Compose 项目"></label><label>状态<select id="observe-state"><option value="">全部状态</option><option value="running">运行中</option><option value="exited">已停止</option></select></label><label>日志行数<select id="observe-tail"><option>100</option><option>300</option><option>500</option></select></label></div>
+        <p id="observe-summary" role="status"></p><div id="observe-containers"></div>
+      </section>
+      <p id="endpoint-notice" class="notice" role="status"></p>
+      <details id="observed-logs" class="logs-disclosure" hidden><summary>容器日志</summary><pre class="container-logs" tabindex="0" aria-label="容器日志内容"></pre></details>
+      <h2>添加应用入口</h2>
       <form id="endpoint-form" class="schedule-form">
-        <label>电脑<select id="endpoint-device" required></select></label>
+
         <label>已发布服务<select id="endpoint-target" required><option value="">先读取容器</option></select></label>
         <label>入口名称<input id="endpoint-name" maxlength="128" required placeholder="例如家庭相册"></label>
         <label>绑定方式<select id="endpoint-binding"><option value="compose">Compose 服务（重建后重连）</option><option value="container">当前容器（不自动继承）</option></select></label>
         <label>上游协议<select id="endpoint-protocol"><option value="http">HTTP</option><option value="https">HTTPS</option></select></label>
         <label>TLS 服务名称<input id="endpoint-tls" maxlength="253" placeholder="HTTPS 时必填"></label>
         <label>原管理工具地址<input id="endpoint-management" type="url" maxlength="2048" placeholder="可选，http/https"></label>
-        <div class="docker-actions"><button id="endpoint-discover" type="button">读取容器</button><button id="endpoint-logs" class="secondary" type="button">读取所选日志</button><button id="endpoint-submit" type="submit">添加入口</button></div>
+        <div class="docker-actions"><button id="endpoint-logs" class="secondary" type="button">读取所选日志</button><button id="endpoint-submit" type="submit">添加入口</button></div>
       </form>
-      <p id="endpoint-notice" class="notice" role="status"></p>
       <div id="endpoint-list" class="endpoint-list"><p>连接后读取入口。</p></div>
-      <details id="observed-logs" class="logs-disclosure" hidden><summary>容器日志</summary><pre class="container-logs"></pre></details>
     </section>
   </section>
   <section id="computers-page">
