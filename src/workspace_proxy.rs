@@ -243,7 +243,15 @@ pub async fn serve_tunnel(socket: WebSocket, tunnel: PendingTunnel) {
         }
         Ok::<(), anyhow::Error>(())
     };
-    tokio::select! {_=outgoing=>{},_=incoming=>{},_=cancel.changed()=>{}}
+    tokio::select! {_=outgoing=>{},_=incoming=>{},_=wait_for_cancel(&mut cancel)=>{}}
+}
+
+// Legacy workspace/application tunnels have no cancellation sender after open completes.
+// Only an explicit true signal revokes a tunnel; dropping that sender is not revocation.
+async fn wait_for_cancel(cancel: &mut tokio::sync::watch::Receiver<bool>) {
+    if cancel.wait_for(|value| *value).await.is_err() {
+        std::future::pending::<()>().await;
+    }
 }
 
 pub async fn agent_tunnel(
@@ -487,6 +495,23 @@ pub async fn proxy(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn legacy_sender_drop_keeps_tunnel_alive_but_explicit_revoke_cancels() {
+        let (sender, mut receiver) = tokio::sync::watch::channel(false);
+        drop(sender);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), wait_for_cancel(&mut receiver))
+                .await
+                .is_err()
+        );
+        let (sender, mut receiver) = tokio::sync::watch::channel(false);
+        sender.send(true).unwrap();
+        drop(sender);
+        tokio::time::timeout(Duration::from_secs(1), wait_for_cancel(&mut receiver))
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn tunnel_claim_checks_identity_session_and_is_one_shot() {
         let tunnels = Tunnels::default();
