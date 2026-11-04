@@ -13,7 +13,10 @@ pub mod lazycat;
 pub mod resources;
 pub mod scheduler;
 
+pub mod access;
+pub mod access_proxy;
 pub mod docker;
+pub mod docker_observe;
 
 pub mod workspace;
 pub mod workspace_proxy;

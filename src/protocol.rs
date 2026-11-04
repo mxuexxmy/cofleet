@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Heartbeat {
     #[serde(default)]
+    pub docker_observe: Option<crate::docker_observe::ObserveCapability>,
+    #[serde(default)]
     pub pipeline: Option<crate::pipeline::PipelineSnapshot>,
     #[serde(default)]
     pub workspace: Option<crate::workspace::WorkspaceSnapshot>,
@@ -83,6 +85,10 @@ impl Heartbeat {
             && self.os.len() <= 32
             && self.arch.len() <= 32
             && self.version.len() <= 64
+            && self
+                .docker_observe
+                .as_ref()
+                .is_none_or(|value| value.valid())
             && self.resource_policy.validate().is_ok()
             && self.capabilities.validate().is_ok()
             && self.resources.as_ref().is_none_or(|r| r.valid())
@@ -92,6 +98,12 @@ impl Heartbeat {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentMessage {
+    ObserveChunk {
+        call_id: uuid::Uuid,
+        index: u16,
+        final_chunk: bool,
+        payload: String,
+    },
     DockerResult {
         call_id: uuid::Uuid,
         result: crate::docker::DockerReply,
@@ -120,6 +132,15 @@ pub enum TunnelTarget {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HubMessage {
+    ObserveCommand {
+        call_id: uuid::Uuid,
+        request: crate::docker_observe::ObserveRequest,
+    },
+    AccessTunnel {
+        tunnel_id: uuid::Uuid,
+        endpoint_id: uuid::Uuid,
+        revision: u64,
+    },
     WorkspaceTunnel {
         #[serde(default)]
         target: TunnelTarget,

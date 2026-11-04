@@ -1,6 +1,6 @@
 # 参考项目与研究依据
 
-研究日期：2026-11-02。以下实现核查基于当时读取的提交；后续开发需要重新验证目标平台版本与 API 可用性。
+研究日期：2026-11-04。以下实现核查基于当时读取的提交；后续开发需要重新验证目标平台版本与 API 可用性。
 
 ## 懒猫设备接力（lzc-mesh）
 
@@ -16,13 +16,24 @@
 ## 远程电脑（lightos-remote-desktop）
 
 - 仓库：https://github.com/ca-x/lightos-remote-desktop
-- 已读提交：`0ed70a91cdf4ea95dd02a1f7cf4ba1b979e676c3`
+- 已读提交：`0b7b7cccd13dfd8dd6d47f766c7ffda2136adb3e`
 - 设备服务注册：`src/agent/network.rs`、`src/agent/network/wire.rs`
 - 设备归属与桌面代理：`manager/hosts.go`
 - 远程管理调用：`manager/control.go`
 - 设计说明：`docs/management-lpk.md`
 
-借鉴点：LocalServiceGateway、设备入口与访问令牌、注册续期、本机控制服务认证。项目存在不同部署与兼容路径，不能混为单一通用接口；原生 Windows/macOS 桌面能力及目标客户端兼容性需实际验证。
+依赖决策：物理机桌面直接使用该项目的 LPK、管理页、受管运行时和连接能力，CoFleet 不实现桌面数据面或运行时管理。LocalServiceGateway、设备入口与访问令牌、注册续期及本机控制服务认证仍可作为架构参考。项目存在不同部署与兼容路径，不能混为单一通用接口；原生 Windows/macOS 桌面能力及目标客户端兼容性需实际验证。完整边界见[物理机终端与远程桌面依赖集成](physical-machine-remote-access.md)。
+
+## LCMD WebShell（lazycat-microserver-webshell）
+
+- 仓库：https://github.com/manateelazycat/lazycat-microserver-webshell
+- 已读提交：`434b1b3ecd27492c2ba865a834a6589f0f0af542`
+- 物理客户端发现：`provider/instances.go`
+- 物理机终端代理：`provider/client_terminal.go`
+- 受管运行时：`clientruntime/managedruntime/`
+- LPK 资源导出：`lzc-build.yml`
+
+依赖决策：物理机 Shell 直接使用该项目的 Provider、Web 前端和电脑端受管运行时，CoFleet 不增加任意命令执行接口。源码中的 `client:<client-instance-id>` 选择器和 `target` 查询参数提供了深链基础，但 CoFleet 设备 ID 到客户端实例 ID 的公开稳定映射尚未验证；没有映射时只打开应用级入口。完整边界见[物理机终端与远程桌面依赖集成](physical-machine-remote-access.md)。
 
 ## 懒猫开发文档
 

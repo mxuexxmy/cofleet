@@ -8,6 +8,7 @@ const { chromium } = createRequire(import.meta.url)('playwright');
 const root = new URL('../', import.meta.url);
 const now = Math.floor(Date.now() / 1000);
 const node = (id, name, extra = {}) => ({ device_id: id, name, os: 'linux', arch: 'x86_64', online: true, accepting_tasks: true, last_seen_unix: now, version: '0.4.0',
+  docker_observe: { environment_id: 'local-fixture', catalog_page_limit: 50, log_line_limit: 500, endpoint_tunnel: true },
   resources: { cpu_usage_percent: 23.4, logical_cpus: 16, available_memory_bytes: 24 * 1024 ** 3, total_memory_bytes: 32 * 1024 ** 3, storage: { available_bytes: 180 * 1024 ** 3, total_bytes: 512 * 1024 ** 3 }, age_secs: 1, sampled_at_unix: now, uptime_secs: 24000 },
   planning_capacity: { cpu_threads: 12, memory_bytes: 24 * 1024 ** 3 }, resource_policy: { reserved_cpu_threads: 4, reserved_memory_mib: 8192 },
   workspace: { desired_running: true, healthy: true, project_service_healthy: true, state: 'running', project_path: '/projects', volume: 'workspace-projects' },
@@ -19,7 +20,7 @@ const node = (id, name, extra = {}) => ({ device_id: id, name, os: 'linux', arch
   ] }, ...extra });
 let nodes = [node('dev-a', '家中的开发主机'), node('dev-b', '随身电脑'), node('dev-c', '一台名称很长的 Windows 与 WSL 协作电脑用于测试换行', { online: false, workspace: null })];
 let unavailable = false, loseOperation = false;
-const requests = [], plans = [];
+const requests = [], plans = [], endpoints = [];
 const server = http.createServer(async (req, res) => {
   const pathname = new URL(req.url, 'http://localhost').pathname;
   const json = (value, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
@@ -31,6 +32,18 @@ const server = http.createServer(async (req, res) => {
     return json(plans);
   }
   if (pathname.startsWith('/api/v1/workloads/')) { plans.length = 0; return json({}); }
+  if (pathname === '/api/v1/access-endpoints') {
+    if (req.method === 'POST') { let body = ''; for await (const chunk of req) body += chunk; const value = JSON.parse(body); const endpoint = { ...value, owner: 'development', enabled: true, revision: 1, public_url: 'https://e-' + value.id + '.apps.example/', created_unix: now, updated_unix: now }; endpoints.push(endpoint); return json(endpoint, 201); }
+    return json(endpoints);
+  }
+  if (pathname.startsWith('/api/v1/access-endpoints/')) {
+    const id = pathname.split('/').pop(), index = endpoints.findIndex(value => value.id === id);
+    if (index < 0) return json({}, 404);
+    if (req.method === 'DELETE') { endpoints.splice(index, 1); res.writeHead(204); return res.end(); }
+    let body = ''; for await (const chunk of req) body += chunk; const change = JSON.parse(body); endpoints[index] = { ...endpoints[index], ...change, revision: endpoints[index].revision + 1 }; return json(endpoints[index]);
+  }
+  if (pathname.endsWith('/docker/catalog')) return json({ result: 'catalog', page: { environment_id: 'local-fixture', snapshot_id: '00000000-0000-4000-8000-000000000001', sampled_at_unix: now, next_cursor: null, containers: [{ id: 'a'.repeat(64), name: 'photos', image: 'photos:latest', state: 'running', health: 'healthy', compose_project: 'home', compose_service: 'photos', compose_oneoff: false, ports: [{ container_port: 8080, host_ip: '127.0.0.1', host_port: 18080, supported: true }] }] } });
+  if (pathname.includes('/docker/containers/') && pathname.endsWith('/logs')) return json({ result: 'logs', value: { container_id: 'a'.repeat(64), collected_at_unix: now, logs: 'existing application log', truncated: false } });
   if (pathname.endsWith('/docker')) {
     let body = ''; for await (const chunk of req) body += chunk;
     const action = JSON.parse(body); requests.push(action);
@@ -110,6 +123,10 @@ try {
   assert.equal(await page.locator('.device').count(), 3);
   unavailable = false; nodes[0].resources.age_secs = 20; await page.evaluate(() => refresh()); assert.match(await page.locator('#details').innerText(), /采集暂未更新/);
   await page.locator('#tab-overview').focus(); await page.keyboard.press('ArrowRight'); assert.equal(await page.locator('#tab-workspace').getAttribute('aria-selected'), 'true');
+  await page.locator('#nav-applications').click(); await page.locator('#endpoint-discover').click(); await page.locator('#endpoint-target option').nth(1).waitFor(); await page.locator('#endpoint-target').selectOption({ index: 1 });
+  await page.locator('#endpoint-logs').click(); assert.match(await page.locator('#observed-logs').innerText(), /existing application log/);
+  await page.locator('#endpoint-name').fill('家庭相册'); await page.locator('#endpoint-submit').click(); await page.locator('.endpoint-row').waitFor(); assert.match(await page.locator('.endpoint-row').innerText(), /家庭相册/);
+  await page.getByRole('button', { name: '禁用', exact: true }).click(); await page.getByRole('button', { name: '启用', exact: true }).waitFor();
   await page.locator('#nav-scheduler').click(); await page.locator('#schedule-memory').fill('2048'); await page.evaluate(() => refresh()); assert.equal(await page.locator('#schedule-memory').inputValue(), '2048');
   await page.locator('#schedule-submit').click(); await page.locator('.workload-row').waitFor(); assert.match(await page.locator('#schedule-notice').innerText(), /已选择匹配节点/);
   await page.evaluate(() => refresh()); assert.match(await page.locator('#schedule-notice').innerText(), /已选择匹配节点/);

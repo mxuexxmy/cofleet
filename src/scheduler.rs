@@ -404,6 +404,7 @@ mod tests {
         ScheduleNode {
             online,
             state: Heartbeat {
+                docker_observe: None,
                 pipeline: Some(Default::default()),
                 workspace: None,
                 docker: Some(Default::default()),

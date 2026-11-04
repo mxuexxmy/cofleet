@@ -1,10 +1,10 @@
 use anyhow::Result;
 use axum::{
     Json, Router,
-    extract::{ConnectInfo, DefaultBodyLimit, Path, Request, State, WebSocketUpgrade},
+    extract::{ConnectInfo, DefaultBodyLimit, Path, Query, Request, State, WebSocketUpgrade},
     http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Response},
-    routing::{any, delete, get, post},
+    routing::{any, delete, get, patch, post},
 };
 use clap::Parser;
 use cofleet::{
@@ -14,8 +14,10 @@ use cofleet::{
 };
 use std::{
     net::{IpAddr, SocketAddr},
+    path::PathBuf,
     sync::Arc,
 };
+use tower::ServiceExt;
 
 #[derive(Parser)]
 #[command(about = "CoFleet WebSocket 控制中枢（内存状态）")]
@@ -27,6 +29,12 @@ struct Args {
     /// 仅在已隔离的入口网络中信任这些直接代理对端，不信任 X-Forwarded-For
     #[arg(long)]
     trusted_ingress_ip: Vec<IpAddr>,
+    /// Persistent manager state. The LazyCat package uses /lzcapp/var/cofleet.
+    #[arg(long, default_value_os_t = cofleet::config::data_dir().join("manager"))]
+    state_dir: PathBuf,
+    /// Dedicated cookie-site base for untrusted application hosts. Without it, access endpoints are disabled.
+    #[arg(long)]
+    access_domain: Option<String>,
 }
 #[derive(Clone)]
 struct App {
@@ -34,6 +42,427 @@ struct App {
     auth: Arc<Authenticator>,
     hub: Hub,
     connections: Arc<tokio::sync::Semaphore>,
+    endpoints: cofleet::access::EndpointStore,
+    access_domain: Option<String>,
+    endpoint_status:
+        Arc<tokio::sync::RwLock<std::collections::HashMap<(String, uuid::Uuid), EndpointStatus>>>,
+}
+#[derive(Clone, serde::Serialize)]
+struct EndpointStatus {
+    verification: &'static str,
+    detail: Option<String>,
+    verified_unix: Option<u64>,
+}
+#[derive(serde::Serialize)]
+struct EndpointView {
+    #[serde(flatten)]
+    endpoint: cofleet::access::AccessEndpoint,
+    #[serde(flatten)]
+    status: EndpointStatus,
+}
+#[derive(Clone)]
+struct Front {
+    app: App,
+    management: Router,
+}
+
+#[derive(serde::Deserialize)]
+struct CatalogQuery {
+    cursor: Option<String>,
+    limit: Option<u16>,
+}
+#[derive(serde::Deserialize)]
+struct LogsQuery {
+    tail: Option<u16>,
+}
+#[derive(serde::Deserialize)]
+struct RevisionQuery {
+    revision: u64,
+}
+
+fn request_marked(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-cofleet-request")
+        .and_then(|v| v.to_str().ok())
+        == Some("1")
+}
+fn host(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(header::HOST)?
+        .to_str()
+        .ok()?
+        .split(':')
+        .next()
+        .map(|v| v.trim_end_matches('.').to_ascii_lowercase())
+}
+fn cookie_site(value: &str) -> String {
+    let labels: Vec<_> = value.trim_end_matches('.').split('.').collect();
+    labels[labels.len().saturating_sub(2)..].join(".")
+}
+fn access_public_url(id: uuid::Uuid, domain: &str) -> String {
+    format!(
+        "https://e-{}.{}/",
+        id.simple(),
+        domain.trim().trim_end_matches('.').to_ascii_lowercase()
+    )
+}
+async fn endpoint_view(app: &App, endpoint: cofleet::access::AccessEndpoint) -> EndpointView {
+    let status = app
+        .endpoint_status
+        .read()
+        .await
+        .get(&(endpoint.owner.clone(), endpoint.definition.id))
+        .cloned()
+        .unwrap_or(EndpointStatus {
+            verification: if endpoint.enabled {
+                "pending"
+            } else {
+                "disabled"
+            },
+            detail: None,
+            verified_unix: None,
+        });
+    EndpointView { endpoint, status }
+}
+async fn sync_endpoint(
+    app: &App,
+    user: &str,
+    endpoint: &cofleet::access::AccessEndpoint,
+) -> EndpointStatus {
+    let status = if !endpoint.enabled {
+        app.hub.cancel_access_endpoint(user, endpoint.definition.id);
+        EndpointStatus {
+            verification: "disabled",
+            detail: None,
+            verified_unix: None,
+        }
+    } else {
+        match app
+            .hub
+            .observe(
+                user,
+                endpoint.definition.device_id,
+                cofleet::docker_observe::ObserveRequest::Authorize {
+                    definition: endpoint.definition.clone(),
+                },
+            )
+            .await
+        {
+            Ok(cofleet::docker_observe::ObserveReply::Authorized { .. }) => EndpointStatus {
+                verification: "verified",
+                detail: None,
+                verified_unix: Some(cofleet::protocol::unix_now()),
+            },
+            Ok(cofleet::docker_observe::ObserveReply::Error { message }) => EndpointStatus {
+                verification: "error",
+                detail: Some(message),
+                verified_unix: None,
+            },
+            Err(status) => EndpointStatus {
+                verification: "pending",
+                detail: Some(format!(
+                    "Agent verification unavailable ({})",
+                    status.as_u16()
+                )),
+                verified_unix: None,
+            },
+            _ => EndpointStatus {
+                verification: "error",
+                detail: Some("unexpected Agent response".into()),
+                verified_unix: None,
+            },
+        }
+    };
+    app.endpoint_status
+        .write()
+        .await
+        .insert((user.into(), endpoint.definition.id), status.clone());
+    status
+}
+
+async fn docker_catalog(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(device): Path<uuid::Uuid>,
+    headers: HeaderMap,
+    Query(query): Query<CatalogQuery>,
+) -> Result<Json<cofleet::docker_observe::ObserveReply>, StatusCode> {
+    let user = app.auth.identify(&headers, peer.ip())?;
+    let reply = app
+        .hub
+        .observe(
+            &user,
+            device,
+            cofleet::docker_observe::ObserveRequest::Catalog {
+                cursor: query.cursor,
+                limit: query.limit.unwrap_or(50),
+            },
+        )
+        .await?;
+    Ok(Json(reply))
+}
+async fn docker_logs(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path((device, container)): Path<(uuid::Uuid, String)>,
+    headers: HeaderMap,
+    Query(query): Query<LogsQuery>,
+) -> Result<Json<cofleet::docker_observe::ObserveReply>, StatusCode> {
+    let user = app.auth.identify(&headers, peer.ip())?;
+    let reply = app
+        .hub
+        .observe(
+            &user,
+            device,
+            cofleet::docker_observe::ObserveRequest::Logs {
+                container_id: container,
+                tail: query.tail.unwrap_or(100),
+            },
+        )
+        .await?;
+    Ok(Json(reply))
+}
+async fn access_endpoints(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<EndpointView>>, (StatusCode, String)> {
+    let user = app
+        .auth
+        .identify(&headers, peer.ip())
+        .map_err(|s| (s, "authentication failed".into()))?;
+    let endpoints = app
+        .endpoints
+        .list(&user)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mut views = Vec::with_capacity(endpoints.len());
+    for endpoint in endpoints {
+        views.push(endpoint_view(&app, endpoint).await)
+    }
+    Ok(Json(views))
+}
+async fn create_endpoint(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(request): Json<cofleet::access::CreateEndpoint>,
+) -> Result<(StatusCode, Json<EndpointView>), (StatusCode, String)> {
+    if !request_marked(&headers) {
+        return Err((StatusCode::FORBIDDEN, "missing request marker".into()));
+    }
+    let user = app
+        .auth
+        .identify(&headers, peer.ip())
+        .map_err(|s| (s, "authentication failed".into()))?;
+    if !app.hub.owns_device(&user, request.device_id).await {
+        return Err((StatusCode::NOT_FOUND, "device not found".into()));
+    }
+    let domain = app.access_domain.as_deref().ok_or((
+        StatusCode::PRECONDITION_FAILED,
+        "isolated access domain is not configured".into(),
+    ))?;
+    let management = host(&headers).ok_or((StatusCode::BAD_REQUEST, "missing Host".into()))?;
+    if cookie_site(&management) == cookie_site(domain) {
+        return Err((
+            StatusCode::PRECONDITION_FAILED,
+            "access domain must use a different cookie site from management".into(),
+        ));
+    }
+    let request_id = request.id;
+    let endpoint = app
+        .endpoints
+        .create(&user, request, access_public_url(request_id, domain))
+        .await
+        .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+    sync_endpoint(&app, &user, &endpoint).await;
+    Ok((
+        StatusCode::CREATED,
+        Json(endpoint_view(&app, endpoint).await),
+    ))
+}
+async fn patch_endpoint(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(id): Path<uuid::Uuid>,
+    headers: HeaderMap,
+    Json(change): Json<cofleet::access::PatchEndpoint>,
+) -> Result<Json<EndpointView>, (StatusCode, String)> {
+    if !request_marked(&headers) {
+        return Err((StatusCode::FORBIDDEN, "missing request marker".into()));
+    }
+    let user = app
+        .auth
+        .identify(&headers, peer.ip())
+        .map_err(|s| (s, "authentication failed".into()))?;
+    let endpoint = app
+        .endpoints
+        .patch(&user, id, change)
+        .await
+        .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "endpoint not found".into()))?;
+    sync_endpoint(&app, &user, &endpoint).await;
+    if !endpoint.enabled {
+        let _ = app
+            .hub
+            .observe(
+                &user,
+                endpoint.definition.device_id,
+                cofleet::docker_observe::ObserveRequest::Revoke {
+                    endpoint_id: id,
+                    revision: endpoint.definition.revision,
+                },
+            )
+            .await;
+    }
+    Ok(Json(endpoint_view(&app, endpoint).await))
+}
+async fn delete_endpoint(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(id): Path<uuid::Uuid>,
+    Query(query): Query<RevisionQuery>,
+    headers: HeaderMap,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if !request_marked(&headers) {
+        return Err((StatusCode::FORBIDDEN, "missing request marker".into()));
+    }
+    let user = app
+        .auth
+        .identify(&headers, peer.ip())
+        .map_err(|s| (s, "authentication failed".into()))?;
+    let old = app
+        .endpoints
+        .get(&user, id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "endpoint not found".into()))?;
+    if !app
+        .endpoints
+        .delete(&user, id, query.revision)
+        .await
+        .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?
+    {
+        return Err((StatusCode::NOT_FOUND, "endpoint not found".into()));
+    }
+    app.hub.cancel_access_endpoint(&user, id);
+    app.endpoint_status
+        .write()
+        .await
+        .remove(&(user.clone(), id));
+    let _ = app
+        .hub
+        .observe(
+            &user,
+            old.definition.device_id,
+            cofleet::docker_observe::ObserveRequest::Revoke {
+                endpoint_id: id,
+                revision: query.revision.saturating_add(1),
+            },
+        )
+        .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn access_request(
+    app: &App,
+    endpoint: cofleet::access::AccessEndpoint,
+    peer: SocketAddr,
+    mut request: Request,
+    authority: String,
+) -> Response {
+    if !endpoint.enabled {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let user = match app.auth.identify(request.headers(), peer.ip()) {
+        Ok(user) => user,
+        Err(status) => return status.into_response(),
+    };
+    if user != endpoint.owner {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if !cofleet::access_proxy::origin_allowed(request.headers(), &authority) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if app.auth.mode == AuthMode::Development {
+        request.headers_mut().remove(header::AUTHORIZATION);
+    }
+    let authorized = app
+        .hub
+        .observe(
+            &user,
+            endpoint.definition.device_id,
+            cofleet::docker_observe::ObserveRequest::Authorize {
+                definition: endpoint.definition.clone(),
+            },
+        )
+        .await;
+    let resolution = match authorized {
+        Ok(cofleet::docker_observe::ObserveReply::Authorized { resolution }) => resolution,
+        Ok(cofleet::docker_observe::ObserveReply::Error { .. }) => {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        _ => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    };
+    let stream = match app.hub.access_stream(&user, &endpoint.definition).await {
+        Ok(stream) => stream,
+        Err(status) => return status.into_response(),
+    };
+    let upstream = match endpoint.definition.protocol {
+        cofleet::access::AccessProtocol::Http => {
+            format!("http://{}:{}", resolution.host, resolution.port)
+        }
+        cofleet::access::AccessProtocol::Https => format!(
+            "https://{}:{}",
+            endpoint
+                .definition
+                .tls_server_name
+                .as_deref()
+                .unwrap_or("invalid"),
+            resolution.port
+        ),
+    };
+    match endpoint.definition.protocol {
+        cofleet::access::AccessProtocol::Http => {
+            cofleet::access_proxy::proxy(request, stream, &authority, &upstream)
+                .await
+                .unwrap_or_else(IntoResponse::into_response)
+        }
+        cofleet::access::AccessProtocol::Https => {
+            let name = endpoint.definition.tls_server_name.as_deref().unwrap();
+            match cofleet::access_proxy::tls(stream, name).await {
+                Ok(tls) => cofleet::access_proxy::proxy(request, tls, &authority, &upstream)
+                    .await
+                    .unwrap_or_else(IntoResponse::into_response),
+                Err(status) => status.into_response(),
+            }
+        }
+    }
+}
+async fn dispatch(
+    State(front): State<Front>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: Request,
+) -> Response {
+    let authority = host(request.headers()).unwrap_or_default();
+    if let Some(domain) = &front.app.access_domain {
+        let suffix = format!(".{}", domain.trim_end_matches('.').to_ascii_lowercase());
+        if authority.ends_with(&suffix) && authority.starts_with("e-") {
+            return match front.app.endpoints.find_public_host(&authority).await {
+                Ok(Some(endpoint)) => {
+                    access_request(&front.app, endpoint, peer, request, authority).await
+                }
+                Ok(None) => StatusCode::NOT_FOUND.into_response(),
+                Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            };
+        }
+    }
+    front
+        .management
+        .clone()
+        .oneshot(request)
+        .await
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 async fn whoami(
     State(app): State<App>,
@@ -307,6 +736,12 @@ async fn ws(
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    if let Some(domain) = &args.access_domain {
+        anyhow::ensure!(
+            !domain.contains(['/', ':', '@', '\\']) && domain.contains('.'),
+            "--access-domain must be a bare DNS suffix"
+        );
+    }
     let token = match args.auth {
         AuthMode::Development => {
             let token = std::env::var("COFLEET_TOKEN").map_err(|_| {
@@ -326,6 +761,7 @@ async fn main() -> Result<()> {
             String::new()
         }
     };
+    let endpoints = cofleet::access::EndpointStore::open(&args.state_dir).await?;
     let app = App {
         workspace_cookie: uuid::Uuid::new_v4().to_string(),
         auth: Arc::new(Authenticator {
@@ -335,6 +771,11 @@ async fn main() -> Result<()> {
         }),
         hub: Hub::default(),
         connections: Arc::new(tokio::sync::Semaphore::new(256)),
+        endpoints,
+        access_domain: args
+            .access_domain
+            .map(|v| v.trim().trim_end_matches('.').to_ascii_lowercase()),
+        endpoint_status: Default::default(),
     };
     let mode = app.auth.mode;
     let routes = Router::new()
@@ -410,8 +851,28 @@ async fn main() -> Result<()> {
         .route("/api/v1/workloads/{workload}", delete(remove_workload))
         .route("/api/v1/devices/{device}/refresh", post(refresh))
         .route("/api/v1/devices/{device}/docker", post(docker_command))
+        .route(
+            "/api/v1/devices/{device}/docker/catalog",
+            get(docker_catalog),
+        )
+        .route(
+            "/api/v1/devices/{device}/docker/containers/{container}/logs",
+            get(docker_logs),
+        )
+        .route(
+            "/api/v1/access-endpoints",
+            get(access_endpoints).post(create_endpoint),
+        )
+        .route(
+            "/api/v1/access-endpoints/{id}",
+            patch(patch_endpoint).delete(delete_endpoint),
+        )
         .layer(DefaultBodyLimit::max(4096))
-        .with_state(app);
+        .with_state(app.clone());
+    let routes = Router::new().fallback(dispatch).with_state(Front {
+        app,
+        management: routes,
+    });
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
     eprintln!(
         "Control hub listening on {}; state is not persisted",

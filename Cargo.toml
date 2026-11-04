@@ -1,6 +1,6 @@
 [package]
 name = "cofleet"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.95"
 publish = false
@@ -10,12 +10,12 @@ repository = "https://github.com/mxuexxmy/cofleet"
 
 [features]
 default = []
-access-probe = ["dep:tokio-rustls", "dep:webpki-roots"]
+access-probe = []
 tray = ["dep:tray-icon", "dep:tao", "dep:open"]
 
 [dependencies]
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"], optional = true }
-webpki-roots = { version = "1", optional = true }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
 sha2 = "0.10"
 tar = { version = "0.4", default-features = false }
 hyper = { version = "1", features = ["client", "http1"] }
@@ -32,8 +32,10 @@ fs2 = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal", "process", "fs"] }
 toml = "0.9"
+tower = "0.5"
 uuid = { version = "1", features = ["v4", "serde"] }
 tray-icon = { version = "0.21", optional = true, default-features = false }
 tao = { version = "0.34", optional = true }

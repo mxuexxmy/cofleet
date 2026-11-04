@@ -14,11 +14,13 @@ use uuid::Uuid;
 struct Manager {
     child: Child,
     url: String,
+    state_dir: std::path::PathBuf,
 }
 impl Drop for Manager {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.state_dir);
     }
 }
 impl Manager {
@@ -26,6 +28,8 @@ impl Manager {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
+        let state_dir =
+            std::env::temp_dir().join(format!("cofleet-manager-test-{}", Uuid::new_v4()));
         let child = Command::new(env!("CARGO_BIN_EXE_cofleet-manager"))
             .args([
                 "--listen",
@@ -34,6 +38,10 @@ impl Manager {
                 "lazycat",
                 "--trusted-ingress-ip",
                 trusted,
+                "--state-dir",
+                state_dir.to_str().unwrap(),
+                "--access-domain",
+                "apps.example.net",
             ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -42,6 +50,7 @@ impl Manager {
         let manager = Self {
             child,
             url: format!("http://127.0.0.1:{port}"),
+            state_dir,
         };
         for _ in 0..100 {
             if reqwest::get(format!("{}/healthz", manager.url))
@@ -79,6 +88,7 @@ impl Manager {
 }
 fn state(device_id: Uuid, name: &str) -> Heartbeat {
     Heartbeat {
+        docker_observe: None,
         pipeline: None,
         workspace: None,
         docker: None,
@@ -282,4 +292,153 @@ async fn incompatible_protocol_and_oversized_frames_are_disconnected() {
         .await
         .unwrap();
     assert_eq!(manager.devices("alice").await[0]["online"], false);
+}
+
+#[tokio::test]
+async fn observation_results_and_persisted_endpoint_api_are_owner_scoped() {
+    let manager = Manager::start("127.0.0.1").await;
+    let device = Uuid::new_v4();
+    let mut observed = state(device, "observer");
+    observed.docker_observe = Some(cofleet::docker_observe::ObserveCapability {
+        environment_id: "local-test".into(),
+        catalog_page_limit: 50,
+        log_line_limit: 500,
+        endpoint_tunnel: true,
+    });
+    let (mut agent, _) = connect_async(manager.ws_request("alice")).await.unwrap();
+    send(
+        &mut agent,
+        AgentMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            state: observed,
+        },
+    )
+    .await;
+    receive(&mut agent).await;
+    let client = reqwest::Client::new();
+    let url = format!(
+        "{}/api/v1/devices/{device}/docker/catalog?limit=50",
+        manager.url
+    );
+    let request = tokio::spawn({
+        let client = client.clone();
+        async move {
+            client
+                .get(url)
+                .header("x-hc-user-id", "alice")
+                .send()
+                .await
+                .unwrap()
+        }
+    });
+    let HubMessage::ObserveCommand {
+        call_id,
+        request: cofleet::docker_observe::ObserveRequest::Catalog { .. },
+    } = receive(&mut agent).await
+    else {
+        panic!("expected catalog command")
+    };
+    let reply = cofleet::docker_observe::ObserveReply::Catalog {
+        page: cofleet::docker_observe::CatalogPage {
+            environment_id: "local-test".into(),
+            snapshot_id: Uuid::new_v4(),
+            sampled_at_unix: 1,
+            containers: vec![],
+            next_cursor: None,
+        },
+    };
+    send(
+        &mut agent,
+        AgentMessage::ObserveChunk {
+            call_id,
+            index: 0,
+            final_chunk: true,
+            payload: serde_json::to_string(&reply).unwrap(),
+        },
+    )
+    .await;
+    assert_eq!(request.await.unwrap().status(), 200);
+    let forbidden = client
+        .get(format!(
+            "{}/api/v1/devices/{device}/docker/catalog",
+            manager.url
+        ))
+        .header("x-hc-user-id", "bob")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(forbidden.status(), 404);
+    let endpoint = Uuid::new_v4();
+    let create = serde_json::json!({"id":endpoint,"device_id":device,"environment_id":"local-test","binding":{"kind":"container","container_id":"a".repeat(64)},"container_port":8080,"protocol":"http","name":"existing app"});
+    let create_request = tokio::spawn({
+        let client = client.clone();
+        let url = format!("{}/api/v1/access-endpoints", manager.url);
+        async move {
+            client
+                .post(url)
+                .header("host", "manager.example.org")
+                .header("x-hc-user-id", "alice")
+                .header("x-cofleet-request", "1")
+                .json(&create)
+                .send()
+                .await
+                .unwrap()
+        }
+    });
+    let HubMessage::ObserveCommand {
+        call_id,
+        request: cofleet::docker_observe::ObserveRequest::Authorize { definition },
+    } = receive(&mut agent).await
+    else {
+        panic!("expected authorization command")
+    };
+    assert_eq!(definition.id, endpoint);
+    let authorized = cofleet::docker_observe::ObserveReply::Authorized {
+        resolution: cofleet::docker_observe::AccessResolution {
+            container_id: "a".repeat(64),
+            host: "127.0.0.1".into(),
+            port: 18080,
+            rebound: false,
+        },
+    };
+    send(
+        &mut agent,
+        AgentMessage::ObserveChunk {
+            call_id,
+            index: 0,
+            final_chunk: true,
+            payload: serde_json::to_string(&authorized).unwrap(),
+        },
+    )
+    .await;
+    let response = create_request.await.unwrap();
+    assert_eq!(response.status(), 201);
+    let value: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(value["owner"], "alice");
+    assert!(
+        value["public_url"]
+            .as_str()
+            .unwrap()
+            .ends_with(".apps.example.net/")
+    );
+    let alice: serde_json::Value = client
+        .get(format!("{}/api/v1/access-endpoints", manager.url))
+        .header("x-hc-user-id", "alice")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let bob: serde_json::Value = client
+        .get(format!("{}/api/v1/access-endpoints", manager.url))
+        .header("x-hc-user-id", "bob")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(alice.as_array().unwrap().len(), 1);
+    assert_eq!(bob, serde_json::json!([]));
 }

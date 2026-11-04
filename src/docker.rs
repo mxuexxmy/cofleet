@@ -337,7 +337,7 @@ fn persist(dir: &Path, desired: &Desired) -> Result<()> {
     }
     result.context("Docker desired state persistence failed")
 }
-pub(crate) async fn docker(args: &[&str]) -> Result<String> {
+pub async fn docker(args: &[&str]) -> Result<String> {
     // Ignore remote contexts/DOCKER_HOST. Only a fixed local engine endpoint is allowed.
     #[cfg(target_os = "linux")]
     const LOCAL_DOCKER_HOST: &str = "unix:///var/run/docker.sock";

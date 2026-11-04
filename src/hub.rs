@@ -32,6 +32,18 @@ struct Record {
     last_report: Option<Uuid>,
     pending_reports: Vec<Uuid>,
     pending_docker: HashMap<Uuid, tokio::sync::oneshot::Sender<crate::docker::DockerReply>>,
+    pending_observe: HashMap<Uuid, PendingObserve>,
+}
+struct PendingObserve {
+    sender: tokio::sync::oneshot::Sender<crate::docker_observe::ObserveReply>,
+    next_index: u16,
+    payload: String,
+}
+struct ObserveFragment {
+    call_id: Uuid,
+    index: u16,
+    final_chunk: bool,
+    payload: String,
 }
 #[derive(Serialize)]
 pub struct Device {
@@ -172,6 +184,124 @@ impl Hub {
         }
         self.tunnels.claim(user, device, session, id)
     }
+    pub async fn access_stream(
+        &self,
+        user: &str,
+        definition: &crate::access::EndpointDefinition,
+    ) -> Result<tokio::io::DuplexStream, axum::http::StatusCode> {
+        use axum::http::StatusCode;
+        let (session, sender, slots) =
+            {
+                let records = self.records.read().await;
+                let record = records
+                    .get(&(user.into(), definition.device_id))
+                    .ok_or(StatusCode::NOT_FOUND)?;
+                let session = record.session.as_ref().ok_or(StatusCode::CONFLICT)?;
+                if !record.state.docker_observe.as_ref().is_some_and(|c| {
+                    c.endpoint_tunnel && c.environment_id == definition.environment_id
+                }) {
+                    return Err(StatusCode::CONFLICT);
+                }
+                (
+                    session.id,
+                    session.sender.clone(),
+                    record.tunnel_slots.clone(),
+                )
+            };
+        self.tunnels
+            .open_access(
+                user,
+                definition.device_id,
+                session,
+                sender,
+                slots,
+                (definition.id, definition.revision),
+            )
+            .await
+    }
+    pub fn cancel_access_endpoint(&self, user: &str, endpoint: Uuid) {
+        self.tunnels.cancel_access(user, endpoint);
+    }
+    pub async fn observe(
+        &self,
+        user: &str,
+        device: Uuid,
+        request: crate::docker_observe::ObserveRequest,
+    ) -> Result<crate::docker_observe::ObserveReply, axum::http::StatusCode> {
+        use axum::http::StatusCode;
+        let call_id = Uuid::new_v4();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        {
+            let mut records = self.records.write().await;
+            let record = records
+                .get_mut(&(user.into(), device))
+                .ok_or(StatusCode::NOT_FOUND)?;
+            let session = record.session.as_ref().ok_or(StatusCode::CONFLICT)?;
+            if record.state.docker_observe.is_none() {
+                return Err(StatusCode::CONFLICT);
+            }
+            record
+                .pending_observe
+                .retain(|_, pending| !pending.sender.is_closed());
+            if record.pending_observe.len() >= 8 {
+                return Err(StatusCode::TOO_MANY_REQUESTS);
+            }
+            session
+                .sender
+                .try_send(HubMessage::ObserveCommand { call_id, request })
+                .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+            record.pending_observe.insert(
+                call_id,
+                PendingObserve {
+                    sender: tx,
+                    next_index: 0,
+                    payload: String::new(),
+                },
+            );
+        }
+        let result = tokio::time::timeout(Duration::from_secs(15), rx).await;
+        if let Some(record) = self.records.write().await.get_mut(&(user.into(), device)) {
+            record.pending_observe.remove(&call_id);
+        }
+        match result {
+            Ok(Ok(reply)) => Ok(reply),
+            Ok(Err(_)) => Err(StatusCode::CONFLICT),
+            Err(_) => Err(StatusCode::GATEWAY_TIMEOUT),
+        }
+    }
+    async fn observe_chunk(&self, user: &str, device: Uuid, session: Uuid, chunk: ObserveFragment) {
+        let ObserveFragment {
+            call_id,
+            index,
+            final_chunk,
+            payload,
+        } = chunk;
+        let mut records = self.records.write().await;
+        let Some(record) = records.get_mut(&(user.into(), device)) else {
+            return;
+        };
+        if record.session.as_ref().map(|s| s.id) != Some(session) {
+            return;
+        }
+        let Some(mut pending) = record.pending_observe.remove(&call_id) else {
+            return;
+        };
+        if index != pending.next_index
+            || payload.len() > 8192
+            || pending.payload.len().saturating_add(payload.len()) > 128 * 1024
+        {
+            return;
+        }
+        pending.payload.push_str(&payload);
+        pending.next_index = pending.next_index.saturating_add(1);
+        if final_chunk {
+            if let Ok(reply) = serde_json::from_str(&pending.payload) {
+                let _ = pending.sender.send(reply);
+            }
+        } else {
+            record.pending_observe.insert(call_id, pending);
+        }
+    }
     pub async fn docker(
         &self,
         user: &str,
@@ -260,6 +390,7 @@ impl Hub {
                 last_report: None,
                 pending_reports: Vec::new(),
                 pending_docker: HashMap::new(),
+                pending_observe: HashMap::new(),
             },
         );
         Some(id)
@@ -295,6 +426,7 @@ impl Hub {
             record.session = None;
             record.pending_reports.clear();
             record.pending_docker.clear();
+            record.pending_observe.clear();
         }
     }
     pub async fn serve(self, user: String, mut socket: WebSocket) {
@@ -336,6 +468,10 @@ impl Hub {
                                 let Ok(message) = serde_json::from_str::<AgentMessage>(&text) else { break; };
                                 if let AgentMessage::DockerResult { call_id,result } = message {
                                     self.docker_result(&user,device,session,call_id,result).await;
+                                    continue;
+                                }
+                                if let AgentMessage::ObserveChunk { call_id,index,final_chunk,payload } = message {
+                                    self.observe_chunk(&user,device,session,ObserveFragment{call_id,index,final_chunk,payload}).await;
                                     continue;
                                 }
                                 let (state, report) = match message {
@@ -385,6 +521,7 @@ mod tests {
     use super::*;
     fn state(id: Uuid) -> Heartbeat {
         Heartbeat {
+            docker_observe: None,
             pipeline: None,
             workspace: None,
             docker: None,

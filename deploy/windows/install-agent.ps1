@@ -10,6 +10,7 @@ param(
     [string] $DataDir = "$env:ProgramData\CoFleet",
     [string] $InstallDir = "$env:ProgramFiles\CoFleet",
     [switch] $Docker,
+    [switch] $DockerObserve,
     [string] $WorkspaceImage,
     [switch] $BuildDeploy
 )
@@ -41,6 +42,7 @@ if (-not (Test-Path -LiteralPath $config)) {
 
 $arguments = @('--service', '--data-dir', ('"{0}"' -f $DataDir))
 if ($Docker) { $arguments += '--docker' }
+if ($DockerObserve) { $arguments += '--docker-observe' }
 if ($WorkspaceImage) { $arguments += @('--workspace-image', $WorkspaceImage) }
 if ($BuildDeploy) { $arguments += '--build-deploy' }
 $binaryPath = '"{0}" {1}' -f $agent, ($arguments -join ' ')

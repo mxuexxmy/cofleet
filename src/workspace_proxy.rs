@@ -24,6 +24,13 @@ use tokio::{
 };
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, protocol::WebSocketConfig};
 use uuid::Uuid;
+type AccessCancels =
+    Arc<std::sync::Mutex<HashMap<(String, Uuid), tokio::sync::watch::Sender<bool>>>>;
+struct NodeChannel {
+    session: Uuid,
+    sender: tokio::sync::mpsc::Sender<HubMessage>,
+    slots: Arc<Semaphore>,
+}
 
 pub struct PendingTunnel {
     pub user: String,
@@ -33,17 +40,20 @@ pub struct PendingTunnel {
     pub ready: oneshot::Sender<()>,
     pub created: Instant,
     pub permits: (OwnedSemaphorePermit, OwnedSemaphorePermit),
+    pub cancel: tokio::sync::watch::Receiver<bool>,
 }
 #[derive(Clone)]
 pub struct Tunnels {
     pending: Arc<std::sync::Mutex<HashMap<Uuid, PendingTunnel>>>,
     slots: Arc<Semaphore>,
+    access_cancels: AccessCancels,
 }
 impl Default for Tunnels {
     fn default() -> Self {
         Self {
             pending: Default::default(),
             slots: Arc::new(Semaphore::new(64)),
+            access_cancels: Default::default(),
         }
     }
 }
@@ -66,12 +76,74 @@ impl Tunnels {
         node_slots: Arc<Semaphore>,
         target: crate::protocol::TunnelTarget,
     ) -> Result<DuplexStream, StatusCode> {
+        let (_cancel, receiver) = tokio::sync::watch::channel(false);
+        self.open_message(
+            user,
+            device,
+            NodeChannel {
+                session,
+                sender,
+                slots: node_slots,
+            },
+            receiver,
+            |id| HubMessage::WorkspaceTunnel {
+                tunnel_id: id,
+                target,
+            },
+        )
+        .await
+    }
+    pub async fn open_access(
+        &self,
+        user: &str,
+        device: Uuid,
+        session: Uuid,
+        sender: tokio::sync::mpsc::Sender<HubMessage>,
+        node_slots: Arc<Semaphore>,
+        endpoint: (Uuid, u64),
+    ) -> Result<DuplexStream, StatusCode> {
+        let (endpoint_id, revision) = endpoint;
+        let receiver = {
+            let mut cancels = self.access_cancels.lock().unwrap();
+            cancels
+                .entry((user.into(), endpoint_id))
+                .or_insert_with(|| tokio::sync::watch::channel(false).0)
+                .subscribe()
+        };
+        self.open_message(
+            user,
+            device,
+            NodeChannel {
+                session,
+                sender,
+                slots: node_slots,
+            },
+            receiver,
+            |id| HubMessage::AccessTunnel {
+                tunnel_id: id,
+                endpoint_id,
+                revision,
+            },
+        )
+        .await
+    }
+    async fn open_message<F>(
+        &self,
+        user: &str,
+        device: Uuid,
+        node: NodeChannel,
+        cancel: tokio::sync::watch::Receiver<bool>,
+        message: F,
+    ) -> Result<DuplexStream, StatusCode>
+    where
+        F: FnOnce(Uuid) -> HubMessage,
+    {
         let permits = (
             self.slots
                 .clone()
                 .try_acquire_owned()
                 .map_err(|_| StatusCode::TOO_MANY_REQUESTS)?,
-            node_slots
+            node.slots
                 .try_acquire_owned()
                 .map_err(|_| StatusCode::TOO_MANY_REQUESTS)?,
         );
@@ -83,22 +155,20 @@ impl Tunnels {
             PendingTunnel {
                 user: user.into(),
                 device,
-                session,
+                session: node.session,
                 stream: back,
                 ready: tx,
                 created: Instant::now(),
                 permits,
+                cancel,
             },
         );
         let _guard = PendingGuard {
             id,
             pending: self.pending.clone(),
         };
-        sender
-            .try_send(HubMessage::WorkspaceTunnel {
-                tunnel_id: id,
-                target,
-            })
+        node.sender
+            .try_send(message(id))
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
         tokio::time::timeout(Duration::from_secs(15), rx)
             .await
@@ -124,6 +194,16 @@ impl Tunnels {
         }
         pending.remove(&id)
     }
+    pub fn cancel_access(&self, user: &str, endpoint: Uuid) {
+        if let Some(sender) = self
+            .access_cancels
+            .lock()
+            .unwrap()
+            .remove(&(user.into(), endpoint))
+        {
+            let _ = sender.send(true);
+        }
+    }
 }
 
 pub async fn serve_tunnel(socket: WebSocket, tunnel: PendingTunnel) {
@@ -131,6 +211,7 @@ pub async fn serve_tunnel(socket: WebSocket, tunnel: PendingTunnel) {
         stream,
         ready,
         permits,
+        mut cancel,
         ..
     } = tunnel;
     let _permits = permits;
@@ -162,13 +243,32 @@ pub async fn serve_tunnel(socket: WebSocket, tunnel: PendingTunnel) {
         }
         Ok::<(), anyhow::Error>(())
     };
-    tokio::select! {_=outgoing=>{},_=incoming=>{}}
+    tokio::select! {_=outgoing=>{},_=incoming=>{},_=cancel.changed()=>{}}
 }
 
 pub async fn agent_tunnel(
     config: Config,
     session: Uuid,
     id: Uuid,
+    port: u16,
+    cookie: Option<String>,
+) -> Result<()> {
+    agent_tunnel_target(
+        config,
+        session,
+        id,
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        port,
+        cookie,
+    )
+    .await
+}
+
+pub async fn agent_tunnel_target(
+    config: Config,
+    session: Uuid,
+    id: Uuid,
+    host: std::net::IpAddr,
     port: u16,
     cookie: Option<String>,
 ) -> Result<()> {
@@ -202,7 +302,7 @@ pub async fn agent_tunnel(
     }
     let target = tokio::time::timeout(
         Duration::from_secs(5),
-        tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)),
+        tokio::net::TcpStream::connect((host, port)),
     )
     .await??;
     let limits = WebSocketConfig::default()

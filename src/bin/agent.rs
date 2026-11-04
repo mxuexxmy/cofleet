@@ -26,6 +26,9 @@ struct Args {
     /// Enable the fixed test workload on a local Linux container engine
     #[arg(long)]
     docker: bool,
+    /// Enable read-only discovery, bounded logs and approved external application endpoints
+    #[arg(long)]
+    docker_observe: bool,
     /// Approve one local immutable development workspace image (enables remote IDE shell in its container)
     #[arg(long, requires = "docker")]
     workspace_image: Option<String>,
@@ -42,6 +45,7 @@ struct State {
     status: AgentStatus,
     monitor: ResourceMonitor,
     docker: Option<cofleet::docker::DockerController>,
+    observer: Option<cofleet::docker_observe::DockerObserver>,
     workspace: Option<cofleet::workspace::WorkspaceController>,
     pipeline: Option<cofleet::pipeline::PipelineController>,
 }
@@ -78,6 +82,14 @@ async fn run_agent(
         },
         docker: if args.docker {
             Some(cofleet::docker::DockerController::open(
+                &args.data_dir,
+                config.device_id,
+            )?)
+        } else {
+            None
+        },
+        observer: if args.docker_observe {
+            Some(cofleet::docker_observe::DockerObserver::open(
                 &args.data_dir,
                 config.device_id,
             )?)
@@ -138,8 +150,8 @@ async fn run_agent(
     });
     let heartbeat = tokio::spawn(heartbeat_loop(state.clone(), notify.clone()));
     eprintln!(
-        "Agent started; fixed Docker test workload enabled: {}",
-        args.docker
+        "Agent started; fixed Docker test workload enabled: {}; Docker observation enabled: {}",
+        args.docker, args.docker_observe
     );
     let slots = Arc::new(tokio::sync::Semaphore::new(16));
     let shutdown = async move {
@@ -269,6 +281,10 @@ type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 fn heartbeat(state: &State) -> Heartbeat {
     let config = &state.config;
     Heartbeat {
+        docker_observe: state
+            .observer
+            .as_ref()
+            .map(|observer| observer.capability()),
         pipeline: state.pipeline.as_ref().map(|p| p.snapshot()),
         docker: state.docker.as_ref().map(|d| d.snapshot()),
         workspace: state.workspace.as_ref().map(|w| w.snapshot()),
@@ -381,6 +397,9 @@ async fn control_session(
         } => session_id,
         _ => anyhow::bail!("unsupported hub protocol"),
     };
+    if let Some(observer) = state.lock().await.observer.clone() {
+        observer.reset_authorizations().await?;
+    }
     mark_success(&state).await;
     let (mut sink, mut stream) = socket.split();
     let mut interval = tokio::time::interval(Duration::from_secs(config.heartbeat_secs));
@@ -392,6 +411,7 @@ async fn control_session(
     let idle = tokio::time::sleep(Duration::from_secs(idle_secs));
     tokio::pin!(idle);
     let (docker_tx, mut docker_rx) = tokio::sync::mpsc::channel(8);
+    let (observe_tx, mut observe_rx) = tokio::sync::mpsc::channel(8);
     let docker_slots = Arc::new(tokio::sync::Semaphore::new(8));
     let mut tunnels = tokio::task::JoinSet::new();
     let tunnel_slots = Arc::new(tokio::sync::Semaphore::new(32));
@@ -399,6 +419,10 @@ async fn control_session(
         let message = tokio::select! {
             Some(_) = tunnels.join_next() => continue,
             Some((call_id, result)) = docker_rx.recv() => AgentMessage::DockerResult { call_id, result },
+            Some((call_id, result)) = observe_rx.recv() => {
+                send_observe_chunks(&mut sink,call_id,&result).await?;
+                continue;
+            },
             frame = stream.next() => {
                 let Some(frame) = frame else { return Ok(()); };
                 match frame? {
@@ -410,6 +434,20 @@ async fn control_session(
                             let Ok(permit)=tunnel_slots.clone().try_acquire_owned() else {continue};
                             let config=config.clone();let cookie=login_cookie.clone();
                             tunnels.spawn(async move {let _permit=permit;let _=cofleet::workspace_proxy::agent_tunnel(config,session_id,tunnel_id,port,cookie).await;});
+                            continue;
+                        },
+                        HubMessage::AccessTunnel {tunnel_id,endpoint_id,revision}=>{
+                            let observer={state.lock().await.observer.clone()};let Some(observer)=observer else{continue};
+                            let Ok(target)=observer.resolve_authorized(endpoint_id,revision).await else{continue};
+                            let Ok(host)=target.host.parse::<std::net::IpAddr>() else{continue};
+                            let Ok(permit)=tunnel_slots.clone().try_acquire_owned() else{continue};
+                            let config=config.clone();let cookie=login_cookie.clone();
+                            tunnels.spawn(async move{let _permit=permit;let connection=cofleet::workspace_proxy::agent_tunnel_target(config,session_id,tunnel_id,host,target.port,cookie);let changed=async{let mut interval=tokio::time::interval(Duration::from_secs(5));interval.tick().await;loop{interval.tick().await;match observer.resolve_authorized(endpoint_id,revision).await{Ok(current)if current==target=>{},_=>break}}};tokio::select!{_=connection=>{},_=changed=>{}}});
+                            continue;
+                        },
+                        HubMessage::ObserveCommand {call_id,request}=>{
+                            let permit=docker_slots.clone().try_acquire_owned()?;let tx=observe_tx.clone();let observer={state.lock().await.observer.clone()};
+                            tokio::spawn(async move{let _permit=permit;let result=match observer{Some(observer)=>observer.execute(request).await,None=>cofleet::docker_observe::ObserveReply::error("Docker observation disabled; restart Agent with --docker-observe")};let _=tx.send((call_id,result)).await;});
                             continue;
                         },
                         HubMessage::DockerCommand { call_id, request } => {
@@ -453,6 +491,45 @@ async fn send_message(
         sink.send(Message::Text(serde_json::to_string(message)?.into())),
     )
     .await??;
+    Ok(())
+}
+async fn send_observe_chunks(
+    sink: &mut futures_util::stream::SplitSink<Socket, Message>,
+    call_id: uuid::Uuid,
+    reply: &cofleet::docker_observe::ObserveReply,
+) -> Result<()> {
+    let payload = serde_json::to_string(reply)?;
+    anyhow::ensure!(
+        payload.len() <= 128 * 1024,
+        "observation response too large"
+    );
+    let mut start = 0usize;
+    let mut index = 0u16;
+    while start < payload.len().max(1) {
+        let mut end = (start + 6000).min(payload.len());
+        while end > start && !payload.is_char_boundary(end) {
+            end -= 1;
+        }
+        let chunk = if payload.is_empty() {
+            String::new()
+        } else {
+            payload[start..end].to_owned()
+        };
+        let message = AgentMessage::ObserveChunk {
+            call_id,
+            index,
+            final_chunk: end == payload.len(),
+            payload: chunk,
+        };
+        send_message(sink, &message).await?;
+        if end == payload.len() {
+            break;
+        }
+        start = end;
+        index = index
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("too many observation chunks"))?;
+    }
     Ok(())
 }
 

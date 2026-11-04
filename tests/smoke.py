@@ -68,7 +68,7 @@ class Smoke(unittest.TestCase):
             return json.load(r)
 
     def manager(self):
-        p = self.spawn('cofleet-manager', '--listen', f'127.0.0.1:{self.port}')
+        p = self.spawn('cofleet-manager', '--listen', f'127.0.0.1:{self.port}', '--state-dir', str(Path(self.tmp.name) / 'manager'))
         self.wait_for(lambda: urllib.request.urlopen(self.url + '/healthz', timeout=1).status == 200)
         return p
 
