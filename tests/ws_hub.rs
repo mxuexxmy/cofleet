@@ -64,6 +64,12 @@ impl Manager {
             } else {
                 vec!["--access-domain", "apps.example.net"]
             })
+            .args([
+                "--webshell-url",
+                "https://shell.example/",
+                "--remote-desktop-url",
+                "https://desktop.example/",
+            ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -769,4 +775,41 @@ async fn offline_snapshots_survive_manager_restart_without_restoring_sessions() 
     assert_eq!(live[0]["name"], "alice reconnected");
     assert_eq!(live[0]["online"], true);
     assert_eq!(manager.devices("bob").await[0]["online"], false);
+}
+
+#[tokio::test]
+async fn external_tool_roots_require_authentication_and_safe_configuration() {
+    let manager = Manager::start("127.0.0.1").await;
+    let client = reqwest::Client::new();
+    let path = format!("{}/api/whoami", manager.url);
+    assert_eq!(
+        client.get(&path).send().await.unwrap().status(),
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+    let response = client
+        .get(&path)
+        .header("x-hc-user-id", "alice")
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    assert_eq!(
+        response.headers()["x-cofleet-scope"],
+        cofleet::auth::owner_scope("alice")
+    );
+    let identity: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(
+        identity["external_tools"]["webshell_url"],
+        "https://shell.example/"
+    );
+    assert_eq!(
+        identity["external_tools"]["remote_desktop_url"],
+        "https://desktop.example/"
+    );
+    let invalid = Command::new(env!("CARGO_BIN_EXE_cofleet-manager"))
+        .args(["--webshell-url", "https://shell.example/?ticket=fixture"])
+        .output()
+        .unwrap();
+    assert!(!invalid.status.success());
 }

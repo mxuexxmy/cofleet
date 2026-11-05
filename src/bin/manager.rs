@@ -22,7 +22,7 @@ use std::{
 use tower::ServiceExt;
 
 #[derive(Parser)]
-#[command(about = "CoFleet WebSocket 控制中枢（内存状态）")]
+#[command(about = "CoFleet WebSocket 控制中枢")]
 struct Args {
     #[arg(long, default_value = "127.0.0.1:9760")]
     listen: SocketAddr,
@@ -45,9 +45,17 @@ struct Args {
     /// Actual platform base used for generated application prefixes; may differ from legacy management host.
     #[arg(long, requires = "trusted_app_prefix")]
     access_prefix_domain: Option<String>,
+    /// LCMD WebShell application root; not a device/session URL.
+    #[arg(long, env = "COFLEET_WEBSHELL_URL", value_parser = cofleet::external_tools::launch_url)]
+    webshell_url: Option<String>,
+    /// LazyCat Remote Desktop application root; authentication remains with that application.
+    #[arg(long, env = "COFLEET_REMOTE_DESKTOP_URL", value_parser = cofleet::external_tools::launch_url)]
+    remote_desktop_url: Option<String>,
 }
 #[derive(Clone)]
 struct App {
+    webshell_url: Option<String>,
+    remote_desktop_url: Option<String>,
     workspace_cookie: String,
     auth: Arc<Authenticator>,
     hub: Hub,
@@ -600,7 +608,7 @@ async fn whoami(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let user = app.auth.identify(&headers, peer.ip())?;
     Ok(Json(
-        serde_json::json!({ "user":user, "scope":cofleet::auth::owner_scope(&user), "auth":app.auth.mode, "version":env!("CARGO_PKG_VERSION"), "access_mode":if app.trusted_prefix {"trusted_prefix"}else if app.access_domain.is_some(){"isolated_domain"}else{"disabled"} }),
+        serde_json::json!({ "user":user, "scope":cofleet::auth::owner_scope(&user), "external_tools":{"webshell_url":app.webshell_url,"remote_desktop_url":app.remote_desktop_url}, "auth":app.auth.mode, "version":env!("CARGO_PKG_VERSION"), "access_mode":if app.trusted_prefix {"trusted_prefix"}else if app.access_domain.is_some(){"isolated_domain"}else{"disabled"} }),
     ))
 }
 async fn devices(
@@ -928,6 +936,8 @@ async fn main() -> Result<()> {
     };
     let endpoints = cofleet::access::EndpointStore::open(&args.state_dir).await?;
     let app = App {
+        webshell_url: args.webshell_url,
+        remote_desktop_url: args.remote_desktop_url,
         workspace_cookie: uuid::Uuid::new_v4().to_string(),
         auth: Arc::new(Authenticator {
             mode: args.auth,

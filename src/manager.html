@@ -23,9 +23,17 @@
   <nav class="primary-nav" aria-label="工作台导航">
     <button id="nav-computers" type="button" aria-current="page">电脑与开发空间</button>
     <button id="nav-applications" type="button">应用入口</button>
+    <button id="nav-tools" type="button">物理机工具</button>
     <button id="nav-scheduler" type="button">调度计划</button>
   </nav>
   <p id="notice" class="notice" role="status" aria-live="polite">凭据仅保存在当前页面内存。</p>
+  <section id="tools-page" hidden aria-labelledby="tools-title">
+    <div class="toolbar"><div><h1 id="tools-title">物理机工具</h1><p>打开上游应用后，在应用中选择要连接的电脑。</p></div><span class="section-note">由外部应用提供</span></div>
+    <section class="scheduler-panel external-tools" aria-label="终端与远程桌面入口">
+      <div id="external-tools"></div>
+      <p class="policy-tip">这里打开应用首页，不会直接连接 CoFleet 当前选中的电脑。设备发现、登录授权、运行时与连接均由上游应用负责。</p>
+    </section>
+  </section>
   <section id="scheduler-page" hidden>
   <section class="scheduler-panel" aria-labelledby="scheduler-title">
     <div class="section-head"><div><h1 id="scheduler-title">调度计划</h1><p>按物理主机容量、数据位置、GPU 与在线偏好选择执行节点。</p><p>仅生成计划，不自动执行构建或容器。管理端重启后需重新创建。</p></div></div>

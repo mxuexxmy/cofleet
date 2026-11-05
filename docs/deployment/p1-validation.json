@@ -1,0 +1,32 @@
+{
+  "version": "0.8.1",
+  "installed_manager_tools_navigation": true,
+  "unconfigured_actions_disabled": true,
+  "dependency_guidance_visible": true,
+  "refresh_preserves_navigation_and_disclosure": true,
+  "mobile_has_no_page_overflow": true,
+  "no_browser_errors": true,
+  "upstream_apps_installed": false,
+  "physical_shell_and_remote_desktop_validated": false,
+  "existing_application_access_regression": {
+    "trusted_consent_and_creation": true,
+    "automatic_prefix_host_tls_and_platform_identity": true,
+    "browser_bound_authorization": true,
+    "http_service_access": true,
+    "health_path": true,
+    "host_only_access_cookie": true,
+    "management_cookie_not_sent_to_app": true,
+    "application_host_not_management_api": true,
+    "disable_denies_access": true,
+    "enable_requires_fresh_grant": true,
+    "manager_logout_revokes_access": true,
+    "browser_errors_absent": true,
+    "application_cookie_login": true,
+    "application_authorization_preserved": true,
+    "identity_and_gateway_cookies_stripped": true,
+    "websocket_echo": true,
+    "logout_closes_live_websocket": true
+  },
+  "package_sha256": "0da85f8342d6e217a295d2aa7017e2e615d5e566322362a82806f6a461237db1",
+  "date": "2026-11-06"
+}

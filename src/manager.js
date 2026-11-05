@@ -13,6 +13,7 @@ const observedTargets = new Map();
 let observeController = null, observeSession = 0;
 let endpointBusy = false, accessMode = 'legacy';
 let pendingEndpoint = null, endpointController = null, activeIdentity = null, activeScope = null;
+let externalTools = {};
 const endpointMessages = new Map();
 const osNames = { linux: 'Linux', windows: 'Windows', macos: 'macOS' };
 
@@ -103,8 +104,34 @@ function appendLogs(section, view, label) {
   const logs = el('pre', 'container-logs', view.logs || '暂无日志。'); logs.onscroll = event => { if (event.currentTarget.closest('details').open) view.logsScroll = event.currentTarget.scrollTop; }; logs.tabIndex = 0; logs.setAttribute('aria-label', label); disclosure.append(logs); section.append(disclosure);
 }
 function showPage(page) {
-  $('#computers-page').hidden = page !== 'computers'; $('#applications-page').hidden = page !== 'applications'; $('#scheduler-page').hidden = page !== 'scheduler';
-  for (const name of ['computers', 'applications', 'scheduler']) { const button = $('#nav-' + name); if (page === name) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); }
+  $('#computers-page').hidden = page !== 'computers'; $('#applications-page').hidden = page !== 'applications'; $('#scheduler-page').hidden = page !== 'scheduler'; $('#tools-page').hidden = page !== 'tools';
+  for (const name of ['computers', 'applications', 'tools', 'scheduler']) { const button = $('#nav-' + name); if (page === name) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); }
+}
+function renderExternalTools() {
+  const area = el('div'); area.id = 'external-tools';
+  const tools = [
+    { key: 'webshell_url', title: '物理机终端', provider: 'LCMD WebShell', action: '打开物理机终端', description: '在 LCMD WebShell 中选择电脑，使用终端与文件工具。', guide: 'https://github.com/manateelazycat/lazycat-microserver-webshell', setting: 'COFLEET_WEBSHELL_URL' },
+    { key: 'remote_desktop_url', title: '远程桌面', provider: '懒猫远程', action: '打开远程桌面', description: '在懒猫远程中选择电脑，按上游引导开启桌面与授予权限。', guide: 'https://github.com/ca-x/lightos-remote-desktop', setting: 'COFLEET_REMOTE_DESKTOP_URL' }
+  ];
+  for (const tool of tools) {
+    const row = el('section', 'external-tool'); row.dataset.key = tool.key;
+    const content = el('div'); content.append(el('h2', '', tool.title), el('p', '', tool.description), el('small', '', '由 ' + tool.provider + ' 提供 · 在新窗口打开'));
+    // Defense in depth: only credential-free HTTPS application roots become links.
+    let url = null;
+    try { const parsed = new URL(externalTools[tool.key]); if (parsed.protocol === 'https:' && !parsed.username && !parsed.password && !parsed.search && !parsed.hash && parsed.pathname === '/') url = parsed.href; } catch {}
+    const actions = el('div', 'external-tool-actions');
+    if (fresh && url) {
+      const link = el('a', 'workspace-link', tool.action); link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer'; actions.append(link);
+      content.append(el('p', 'policy-tip', '已配置应用地址，安装与在线状态由上游应用确认。'));
+    } else {
+      const button = el('button', 'secondary', tool.action); button.disabled = true; actions.append(button);
+      content.append(el('p', 'resource-warning', !fresh ? '连接管理中心后读取入口配置。' : '尚未配置应用地址。请先在微服安装 ' + tool.provider + '，再由管理员配置应用首页地址。'));
+    }
+    const guide = el('a', 'quiet', '查看安装与使用说明'); guide.href = tool.guide; guide.target = '_blank'; guide.rel = 'noopener noreferrer'; actions.append(guide);
+    const details = el('details', 'external-tool-help'); details.open = $('#external-tools [data-key="' + tool.key + '"] details')?.open || false; details.append(el('summary', '', '入口配置说明'), el('p', '', '管理端部署环境变量 ' + tool.setting + ' 填写应用的 HTTPS 首页地址。不填写设备路径、查询参数或登录票据；配置后重启管理端。'));
+    content.append(details); row.append(content, actions); area.append(row);
+  }
+  commit($('#external-tools'), area);
 }
 function bytes(value) {
   if (!Number.isFinite(value) || value < 0) return '—';
@@ -493,6 +520,7 @@ function render() {
   $('#summary').textContent = devices.length ? devices.length + ' 台设备，' + (fresh ? online + ' 台在线' : '连接状态待确认') : '等待电脑接入。';
   renderWorkloads();
   renderApplications();
+  renderExternalTools();
   renderDetails(visible.find(d => d.device_id === selectedId));
 }
 
@@ -841,6 +869,7 @@ async function refresh() {
     checkAccountScope(endpointResponse, identity.scope);
     const endpointData = await endpointResponse.json();
     if (current !== generation) return;
+    externalTools = identity.external_tools || {};
     devices = data; workloads = Array.isArray(workloadData) ? workloadData : []; endpoints = Array.isArray(endpointData) ? endpointData : [];
     if (!submittingSchedule && pendingSchedule && workloads.some(value => value.workload_id === pendingSchedule.workload_id)) pendingSchedule = null;
     fresh = true; lastRefresh = Date.now();
@@ -878,6 +907,7 @@ $('#logout').onclick = () => {
   resetInterface(); setConnection('已断开'); setNotice('凭据已从页面内存清除。'); render();
 };
 function resetInterface() {
+  externalTools = {};
   $('#search').value = ''; $('#online-only').checked = false;
   $('#endpoint-form').reset(); $('#endpoint-trust').checked = false;
   $('#schedule-form').reset(); $('#schedule-notice').textContent = '';
@@ -885,6 +915,7 @@ function resetInterface() {
 }
 $('#nav-computers').onclick = () => showPage('computers');
 $('#nav-applications').onclick = () => showPage('applications');
+$('#nav-tools').onclick = () => showPage('tools');
 $('#nav-scheduler').onclick = () => showPage('scheduler');
 $('#refresh').onclick = refresh;
 $('#search').oninput = render;

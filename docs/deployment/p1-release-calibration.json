@@ -1,0 +1,94 @@
+{
+  "created_at": "2026-11-05T18:24:45+00:00",
+  "documents": [
+    {
+      "attempt_errors": [],
+      "bytes": 8914,
+      "content_type": "text/plain; charset=utf-8",
+      "local_file": "package.md",
+      "official_commit": null,
+      "requested_url": "https://gitee.com/lazycatcloud/lzc-developer-doc/raw/master/docs/spec/package.md",
+      "sha256": "464056bd9ba621e55ac8506c256a94ebad5b8d8f06752c156a8d27cce154cf14",
+      "source_kind": "raw",
+      "source_url": "https://raw.giteeusercontent.com/lazycatcloud/lzc-developer-doc/raw/master/docs/spec/package.md",
+      "status": "downloaded",
+      "title": "package.yml",
+      "topic": "package",
+      "source_url_query_omitted": true
+    },
+    {
+      "attempt_errors": [],
+      "bytes": 16331,
+      "content_type": "text/plain; charset=utf-8",
+      "local_file": "manifest.md",
+      "official_commit": null,
+      "requested_url": "https://gitee.com/lazycatcloud/lzc-developer-doc/raw/master/docs/spec/manifest.md",
+      "sha256": "7d5ba18a72ad78aebd08caba9a8604b0c3ab8b0a19740c4f654e6ecc2190faa9",
+      "source_kind": "raw",
+      "source_url": "https://raw.giteeusercontent.com/lazycatcloud/lzc-developer-doc/raw/master/docs/spec/manifest.md",
+      "status": "downloaded",
+      "title": "lzc-manifest.yml",
+      "topic": "manifest",
+      "source_url_query_omitted": true
+    },
+    {
+      "attempt_errors": [],
+      "bytes": 9833,
+      "content_type": "text/plain; charset=utf-8",
+      "local_file": "build.md",
+      "official_commit": null,
+      "requested_url": "https://gitee.com/lazycatcloud/lzc-developer-doc/raw/master/docs/spec/build.md",
+      "sha256": "7a2ab47c85f7679e9c113e94e2c917a4e1a28c952f05c32995493f756505fbba",
+      "source_kind": "raw",
+      "source_url": "https://raw.giteeusercontent.com/lazycatcloud/lzc-developer-doc/raw/master/docs/spec/build.md",
+      "status": "downloaded",
+      "title": "lzc-build.yml",
+      "topic": "build",
+      "source_url_query_omitted": true
+    },
+    {
+      "attempt_errors": [],
+      "bytes": 3990,
+      "content_type": "text/plain; charset=utf-8",
+      "local_file": "lpk-format.md",
+      "official_commit": null,
+      "requested_url": "https://gitee.com/lazycatcloud/lzc-developer-doc/raw/master/docs/spec/lpk-format.md",
+      "sha256": "4fc5d4101a96b8364fe9708ae058585ab32b9a5d5a4b8c319c76b6761665955a",
+      "source_kind": "raw",
+      "source_url": "https://raw.giteeusercontent.com/lazycatcloud/lzc-developer-doc/raw/master/docs/spec/lpk-format.md",
+      "status": "downloaded",
+      "title": "LPK 包格式",
+      "topic": "lpk-format",
+      "source_url_query_omitted": true
+    },
+    {
+      "attempt_errors": [],
+      "bytes": 5119,
+      "content_type": "text/plain; charset=utf-8",
+      "local_file": "headers.md",
+      "official_commit": null,
+      "requested_url": "https://gitee.com/lazycatcloud/lzc-developer-doc/raw/master/docs/http-request-headers.md",
+      "sha256": "0197ea25f93776df84bbb69224ab072b69c9c98febc582beb571a28c4be855fe",
+      "source_kind": "raw",
+      "source_url": "https://raw.giteeusercontent.com/lazycatcloud/lzc-developer-doc/raw/master/docs/http-request-headers.md",
+      "status": "downloaded",
+      "title": "HTTP 身份 Header",
+      "topic": "headers",
+      "source_url_query_omitted": true
+    }
+  ],
+  "repository": "https://gitee.com/lazycatcloud/lzc-developer-doc",
+  "requested_official_commit": null,
+  "result": "success",
+  "schema_version": 1,
+  "source_policy": [
+    "gitee-raw",
+    "developer-site",
+    "aipod-official-site-only",
+    "explicit-offline-declaration"
+  ],
+  "target_versions": {
+    "lzc_cli": "2.0.9",
+    "lzcos": "1.6.2+fix.4"
+  }
+}
