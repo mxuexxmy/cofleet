@@ -10,7 +10,7 @@ const box=await local('/default-box');const ext=await local('/box-ext-info?'+new
 const token=ext.cookies.find(c=>c.name==='Lzc-Auth-Token').value;
 const base=(process.env.COFLEET_M01_MANAGER_URL || (await readFile(new URL('.local/current-manager-url',root),'utf8'))).trim().replace(/\/$/,'');assert.ok(new URL(base).hostname.endsWith('.'+box.boxDomain));
 const browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_PATH||'/usr/bin/chromium',args:['--no-sandbox']});
-const output=new URL('.local/release-0.7.1/',root);await mkdir(output,{recursive:true});
+const output=new URL(process.env.COFLEET_ACCESS_VERIFY_OUTPUT_DIR || '.local/release-0.7.1/',root);await mkdir(output,{recursive:true});
 try{
  const context=await browser.newContext();await context.addCookies([{name:'Lzc-Auth-Token',value:token,domain:'.'+box.boxDomain,path:'/',secure:true,httpOnly:true,sameSite:'Lax'}]);
  const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(base);await page.locator('.device').first().waitFor();await page.locator('#nav-applications').click();

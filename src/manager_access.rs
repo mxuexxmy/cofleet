@@ -283,7 +283,18 @@ pub(super) async fn dispatch(front: Front, peer: SocketAddr, request: Request) -
     let authority = host(request.headers()).unwrap_or_default();
     let management = front.app.management_domain.as_deref().unwrap_or("");
     if authority != management {
-        let expected_suffix = format!("-{management}");
+        let prefix_base = front
+            .app
+            .access_prefix_domain
+            .as_deref()
+            .unwrap_or(management);
+        if authority == prefix_base
+            && request.method() == axum::http::Method::GET
+            && request.uri().path() == "/"
+        {
+            return redirect(&format!("https://{management}/"));
+        }
+        let expected_suffix = format!("-{prefix_base}");
         if authority.starts_with("e-") && authority.ends_with(&expected_suffix) {
             return match front.app.endpoints.find_public_host(&authority).await {
                 Ok(Some(endpoint)) => {

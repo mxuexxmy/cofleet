@@ -1,5 +1,5 @@
 application:
-  subdomain: cofleet-test
+  subdomain: cofleet
   run_as: "1000:1000"
   routes:
     - /=exec://9760,/lzcapp/pkg/content/start-manager.sh

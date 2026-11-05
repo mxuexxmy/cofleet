@@ -28,6 +28,9 @@ impl Manager {
         Self::start_mode(trusted, false).await
     }
     async fn start_mode(trusted: &str, prefix: bool) -> Self {
+        Self::start_configuration(trusted, prefix, false).await
+    }
+    async fn start_configuration(trusted: &str, prefix: bool, legacy: bool) -> Self {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
@@ -44,7 +47,15 @@ impl Manager {
                 "--state-dir",
                 state_dir.to_str().unwrap(),
             ])
-            .args(if prefix {
+            .args(if legacy {
+                vec![
+                    "--trusted-app-prefix",
+                    "--management-domain",
+                    "cofleet-test.box.test",
+                    "--access-prefix-domain",
+                    "test.box.test",
+                ]
+            } else if prefix {
                 vec![
                     "--trusted-app-prefix",
                     "--management-domain",
@@ -455,11 +466,47 @@ async fn observation_results_and_persisted_endpoint_api_are_owner_scoped() {
 
 #[tokio::test]
 async fn trusted_prefix_requires_owner_browser_session_and_single_use_grant() {
-    let manager = Manager::start_mode("127.0.0.1", true).await;
+    trusted_prefix_case(false).await;
+}
+#[tokio::test]
+async fn legacy_management_address_keeps_agent_and_authorization_with_new_prefix_base() {
+    trusted_prefix_case(true).await;
+}
+async fn trusted_prefix_case(legacy: bool) {
+    let manager = Manager::start_configuration("127.0.0.1", true, legacy).await;
+    let management = if legacy {
+        "cofleet-test.box.test"
+    } else {
+        "cofleet.box.test"
+    };
+    let prefix = if legacy {
+        "test.box.test"
+    } else {
+        "cofleet.box.test"
+    };
+    let origin = format!("https://{management}");
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
+    if legacy {
+        let primary = client
+            .get(format!("{}/", manager.url))
+            .header("host", prefix)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(primary.status(), 303);
+        assert_eq!(primary.headers()["location"], format!("{origin}/"));
+        let hidden = client
+            .get(format!("{}/api/v1/devices", manager.url))
+            .header("host", prefix)
+            .header("x-hc-user-id", "alice")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(hidden.status(), 404);
+    }
     let device = Uuid::new_v4();
     let mut observed = state(device, "trusted observer");
     observed.docker_observe = Some(cofleet::docker_observe::ObserveCapability {
@@ -471,7 +518,7 @@ async fn trusted_prefix_requires_owner_browser_session_and_single_use_grant() {
     let mut request = manager.ws_request("alice");
     request
         .headers_mut()
-        .insert("host", "cofleet.box.test".parse().unwrap());
+        .insert("host", management.parse().unwrap());
     let (mut agent, _) = connect_async(request).await.unwrap();
     send(
         &mut agent,
@@ -487,17 +534,17 @@ async fn trusted_prefix_requires_owner_browser_session_and_single_use_grant() {
     let create = |cookie: String| {
         client
             .post(format!("{}/api/v1/access-endpoints", manager.url))
-            .header("host", "cofleet.box.test")
+            .header("host", management)
             .header("x-hc-user-id", "alice")
             .header("x-cofleet-request", "1")
-            .header("origin", "https://cofleet.box.test")
+            .header("origin", &origin)
             .header("cookie", cookie)
             .json(&body)
     };
     assert_eq!(create(String::new()).send().await.unwrap().status(), 403);
     let root = client
         .get(format!("{}/", manager.url))
-        .header("host", "cofleet.box.test")
+        .header("host", management)
         .header("x-hc-user-id", "alice")
         .send()
         .await
@@ -534,7 +581,7 @@ async fn trusted_prefix_requires_owner_browser_session_and_single_use_grant() {
     let response = call.await.unwrap().unwrap();
     assert_eq!(response.status(), 201);
     let endpoint: serde_json::Value = response.json().await.unwrap();
-    let authority = format!("e-{}-cofleet.box.test", id.simple());
+    let authority = format!("e-{}-{prefix}", id.simple());
     assert_eq!(endpoint["public_url"], format!("https://{authority}/"));
     let app_get = |user: &str| {
         client
@@ -556,10 +603,10 @@ async fn trusted_prefix_requires_owner_browser_session_and_single_use_grant() {
     let challenge = location.split("challenge=").nth(1).unwrap();
     let issued = client
         .post(format!("{}/access/authorize", manager.url))
-        .header("host", "cofleet.box.test")
+        .header("host", management)
         .header("x-hc-user-id", "alice")
         .header("cookie", &manager_cookie)
-        .header("origin", "https://cofleet.box.test")
+        .header("origin", &origin)
         .form(&[("challenge", challenge)])
         .send()
         .await
@@ -578,7 +625,7 @@ async fn trusted_prefix_requires_owner_browser_session_and_single_use_grant() {
             .post(format!("{}/.cofleet/accept", manager.url))
             .header("host", &authority)
             .header("x-hc-user-id", "alice")
-            .header("origin", "https://cofleet.box.test")
+            .header("origin", &origin)
             .header("cookie", &bootstrap)
             .form(&[("ticket", ticket)])
     };

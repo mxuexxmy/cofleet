@@ -1,5 +1,5 @@
 package: xyz.mxue.lzc.app.cofleet
-version: "0.7.1"
+version: "0.7.2"
 name: 聚机验证版
 description: CoFleet 设备、开发空间、构建发布与已有 Docker 应用入口验证版（x86_64）
 min_os_version: "1.6.0"

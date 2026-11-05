@@ -6,15 +6,14 @@ set --
 if [ -n "${COFLEET_ACCESS_DOMAIN:-}" ]; then
   set -- --access-domain "$COFLEET_ACCESS_DOMAIN"
 else
-  # The verified target cannot route prefix hosts when the assigned base label has '-'.
-  # Keep legacy installations in observation mode; use a plain label for access deployments.
-  case "${LAZYCAT_APP_DOMAIN:?missing assigned application domain}" in
-    *.*) base_label=${LAZYCAT_APP_DOMAIN%%.*} ;;
-    *) exit 1 ;;
-  esac
+  # A migrated legacy deployment uses "test" as platform base while retaining
+  # "cofleet-test" as its canonical management and Agent address.
+  assigned_domain=${LAZYCAT_APP_DOMAIN:?missing assigned application domain}
+  base_label=${assigned_domain%%.*}
   case "$base_label" in
-    *-*) ;;
-    *) set -- --trusted-app-prefix --management-domain "$LAZYCAT_APP_DOMAIN" ;;
+    test) set -- --trusted-app-prefix --management-domain "cofleet-$assigned_domain" --access-prefix-domain "$assigned_domain" ;;
+    *-*) ;; # Unmigrated legacy deployments retain observation until the domain migration.
+    *) set -- --trusted-app-prefix --management-domain "$assigned_domain" ;;
   esac
 fi
 exec /lzcapp/pkg/content/cofleet-manager \

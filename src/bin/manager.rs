@@ -42,6 +42,9 @@ struct Args {
     trusted_app_prefix: bool,
     #[arg(long, env = "LAZYCAT_APP_DOMAIN")]
     management_domain: Option<String>,
+    /// Actual platform base used for generated application prefixes; may differ from legacy management host.
+    #[arg(long, requires = "trusted_app_prefix")]
+    access_prefix_domain: Option<String>,
 }
 #[derive(Clone)]
 struct App {
@@ -52,6 +55,7 @@ struct App {
     endpoints: cofleet::access::EndpointStore,
     access_domain: Option<String>,
     management_domain: Option<String>,
+    access_prefix_domain: Option<String>,
     trusted_prefix: bool,
     access_sessions: cofleet::access_sessions::Sessions,
     endpoint_status:
@@ -293,7 +297,7 @@ async fn create_endpoint(
         format!(
             "https://e-{}-{}/",
             request.id.simple(),
-            app.management_domain.as_deref().unwrap()
+            app.access_prefix_domain.as_deref().unwrap()
         )
     } else {
         let domain = app.access_domain.as_deref().ok_or((
@@ -841,6 +845,20 @@ async fn main() -> Result<()> {
             "management subdomain is too long for prefix hosts"
         );
     }
+    if let Some(prefix) = &args.access_prefix_domain {
+        let management = args.management_domain.as_deref().unwrap_or("");
+        anyhow::ensure!(
+            (prefix == management || management.ends_with(&format!("-{prefix}")))
+                && !prefix.contains(['/', ':', '@', '\\'])
+                && prefix.split('.').all(|p| !p.is_empty()
+                    && !p.starts_with('-')
+                    && !p.ends_with('-')
+                    && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+                && prefix.len() <= 200
+                && prefix.split('.').next().unwrap().len() + 35 <= 63,
+            "access prefix domain must be the validated management host or its platform base"
+        );
+    }
     let token = match args.auth {
         AuthMode::Development => {
             let token = std::env::var("COFLEET_TOKEN").map_err(|_| {
@@ -874,6 +892,9 @@ async fn main() -> Result<()> {
         access_domain: args
             .access_domain
             .map(|v| v.trim().trim_end_matches('.').to_ascii_lowercase()),
+        access_prefix_domain: args
+            .access_prefix_domain
+            .or_else(|| args.management_domain.clone()),
         management_domain: args.management_domain,
         trusted_prefix: args.trusted_app_prefix,
         access_sessions: Default::default(),

@@ -118,7 +118,7 @@ cargo run --bin cofleetctl -- --data-dir .cofleet-dev/lazycat init \
 
 `cargo test --locked` 另外验证模拟 Ingress 的账号隔离、伪造 Header 拒绝、同设备重连替换、请求 ID 应答及非法协议/超大帧断开。模拟身份不等同真实懒猫认证测试。
 
-当前 LPK 包 ID 为 `xyz.mxue.lzc.app.cofleet`，构建配置使用 `assets/cofleet-icon-256.png`。网页通过管理端内嵌的 `/favicon.ico` 提供多尺寸透明图标。包 ID 与子域名分别配置，当前子域名仍为 `cofleet-test`。
+当前 LPK 包 ID 为 `xyz.mxue.lzc.app.cofleet`，构建配置使用 `assets/cofleet-icon-256.png`。网页通过管理端内嵌的 `/favicon.ico` 提供多尺寸透明图标。包 ID 与子域名分别配置，新安装默认子域名为 `cofleet`；旧实例的 `cofleet-test` 地址通过平台基础域兼容保持，见 [0.7.2 集成](access-integration.md)。
 
 ## 0.2.0 资源监测与本机预留
 

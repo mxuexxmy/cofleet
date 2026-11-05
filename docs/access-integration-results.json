@@ -1,0 +1,45 @@
+{
+  "integration": {
+    "version": "0.7.2",
+    "old_management_and_agent_url_preserved": true,
+    "local_agent_reconnected_using_original_config": true,
+    "resource_and_workspace_configuration_preserved": true,
+    "release_versions_and_images_preserved": true,
+    "editor_project_and_application_access": true,
+    "assets_match": true,
+    "platform_base_redirects_to_legacy_management": true,
+    "anonymous_access_rejected": true,
+    "offline_remote_device_not_reconfigured": true
+  },
+  "live_access": {
+    "version": "0.7.2",
+    "checks": {
+      "trusted_consent_and_creation": true,
+      "automatic_prefix_host_tls_and_platform_identity": true,
+      "browser_bound_authorization": true,
+      "http_service_access": true,
+      "health_path": true,
+      "host_only_access_cookie": true,
+      "management_cookie_not_sent_to_app": true,
+      "application_host_not_management_api": true,
+      "disable_denies_access": true,
+      "enable_requires_fresh_grant": true,
+      "manager_logout_revokes_access": true,
+      "browser_errors_absent": true,
+      "application_cookie_login": true,
+      "application_authorization_preserved": true,
+      "identity_and_gateway_cookies_stripped": true,
+      "websocket_echo": true,
+      "logout_closes_live_websocket": true
+    },
+    "limitations": [
+      "Shared parent ordinary cookies remain possible: trusted applications only.",
+      "Second real account and platform-side logout were not tested."
+    ]
+  },
+  "limitations": [
+    "Remote Windows device was offline; its configuration was not changed.",
+    "Same-parent ordinary cookie isolation is not claimed; trusted applications only.",
+    "Second real account and platform-side logout were not tested."
+  ]
+}
