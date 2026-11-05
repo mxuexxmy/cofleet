@@ -181,6 +181,7 @@ impl EndpointStore {
                     enabled INTEGER NOT NULL, revision INTEGER NOT NULL,
                     public_url TEXT NOT NULL, created_unix INTEGER NOT NULL, updated_unix INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS device_snapshots(owner TEXT NOT NULL,device_id TEXT NOT NULL,snapshot_json TEXT NOT NULL,last_seen INTEGER NOT NULL,PRIMARY KEY(owner,device_id));
                 CREATE TABLE IF NOT EXISTS trusted_access_endpoints(endpoint_id TEXT PRIMARY KEY, owner TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS access_endpoints_owner ON access_endpoints(owner);")?;
             let version: i64 = conn.query_row("SELECT version FROM schema_version", [], |r| r.get(0))?;
@@ -202,6 +203,50 @@ impl EndpointStore {
         })
         .await
         .context("endpoint database worker failed")?
+    }
+    pub async fn save_device(
+        &self,
+        owner: &str,
+        state: &crate::protocol::Heartbeat,
+        last_seen: u64,
+    ) -> Result<()> {
+        ensure!(
+            !owner.is_empty() && owner.len() <= 128 && state.valid(),
+            "invalid device snapshot"
+        );
+        let owner = owner.to_owned();
+        let device = state.device_id.to_string();
+        let payload = serde_json::to_string(state)?;
+        ensure!(
+            payload.len() <= crate::protocol::MAX_FRAME_BYTES,
+            "device snapshot exceeds control frame limit"
+        );
+        self.run(move |conn| {
+            let tx=conn.transaction()?;
+            let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM device_snapshots WHERE owner=? AND device_id=?)",params![owner,device],|r|r.get(0))?;
+            if !exists {
+                let all:u64=tx.query_row("SELECT count(*) FROM device_snapshots",[],|r|r.get(0))?;
+                let own:u64=tx.query_row("SELECT count(*) FROM device_snapshots WHERE owner=?",[&owner],|r|r.get(0))?;
+                ensure!(all<4096&&own<256,"device registry capacity exceeded");
+            }
+            tx.execute("INSERT INTO device_snapshots(owner,device_id,snapshot_json,last_seen) VALUES(?,?,?,?) ON CONFLICT(owner,device_id) DO UPDATE SET snapshot_json=excluded.snapshot_json,last_seen=excluded.last_seen",params![owner,device,payload,last_seen])?;
+            tx.commit()?;Ok(())
+        }).await
+    }
+    pub async fn saved_devices(&self) -> Result<Vec<(String, crate::protocol::Heartbeat, u64)>> {
+        self.run(|conn| {
+            let mut statement=conn.prepare("SELECT owner,device_id,snapshot_json,last_seen FROM device_snapshots ORDER BY owner,device_id LIMIT 4097")?;
+            let rows=statement.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,u64>(3)?)))?;
+            let mut result=Vec::new();let mut counts=std::collections::HashMap::new();
+            for row in rows {
+                let (owner,id,payload,last_seen)=row?;
+                ensure!(result.len()<4096&&!owner.is_empty()&&owner.len()<=128&&payload.len()<=crate::protocol::MAX_FRAME_BYTES,"invalid device registry");
+                let state:crate::protocol::Heartbeat=serde_json::from_str(&payload).context("invalid saved device snapshot")?;
+                ensure!(state.valid()&&state.device_id.to_string()==id,"device snapshot identity mismatch");
+                let count=counts.entry(owner.clone()).or_insert(0);*count+=1;ensure!(*count<=256,"device registry account limit exceeded");
+                result.push((owner,state,last_seen.min(crate::protocol::unix_now())));
+            }Ok(result)
+        }).await
     }
     pub async fn list(&self, owner: &str) -> Result<Vec<AccessEndpoint>> {
         let owner = owner.to_owned();
@@ -247,19 +292,64 @@ impl EndpointStore {
         request: CreateEndpoint,
         public_url: String,
     ) -> Result<AccessEndpoint> {
+        self.create_with_trust(owner, request, public_url, false)
+            .await
+    }
+    pub async fn create_with_trust(
+        &self,
+        owner: &str,
+        request: CreateEndpoint,
+        public_url: String,
+        trusted: bool,
+    ) -> Result<AccessEndpoint> {
         request.validate()?;
         let owner = owner.to_owned();
         self.run(move |conn| {
+            let tx=conn.transaction()?;
             let now = crate::protocol::unix_now();
             let binding = serde_json::to_string(&request.binding)?;
             let protocol = protocol_name(&request.protocol);
-            let changed = conn.execute("INSERT OR IGNORE INTO access_endpoints(id,owner,device_id,environment_id,binding_json,container_port,protocol,tls_server_name,name,management_url,enabled,revision,public_url,created_unix,updated_unix) VALUES(?,?,?,?,?,?,?,?,?,?,1,1,?,?,?)",
+            let changed = tx.execute("INSERT OR IGNORE INTO access_endpoints(id,owner,device_id,environment_id,binding_json,container_port,protocol,tls_server_name,name,management_url,enabled,revision,public_url,created_unix,updated_unix) VALUES(?,?,?,?,?,?,?,?,?,?,1,1,?,?,?)",
                 params![request.id.to_string(),owner,request.device_id.to_string(),request.environment_id,binding,request.container_port,protocol,request.tls_server_name,request.name.trim(),request.management_url,public_url,now,now])?;
-            let endpoint = conn.query_row("SELECT id,owner,device_id,environment_id,binding_json,container_port,protocol,tls_server_name,name,management_url,enabled,revision,public_url,created_unix,updated_unix FROM access_endpoints WHERE owner=? AND id=?", params![owner,request.id.to_string()], row_endpoint).optional()?.context("endpoint ID belongs to another owner")?;
+            let endpoint = tx.query_row("SELECT id,owner,device_id,environment_id,binding_json,container_port,protocol,tls_server_name,name,management_url,enabled,revision,public_url,created_unix,updated_unix FROM access_endpoints WHERE owner=? AND id=?", params![owner,request.id.to_string()], row_endpoint).optional()?.context("endpoint ID belongs to another owner")?;
             if changed == 0 {
                 ensure!(endpoint.definition.device_id == request.device_id && endpoint.definition.environment_id == request.environment_id && endpoint.definition.binding == request.binding && endpoint.definition.container_port == request.container_port && endpoint.definition.protocol == request.protocol && endpoint.definition.tls_server_name == request.tls_server_name && endpoint.name == request.name.trim() && endpoint.management_url == request.management_url, "endpoint ID already used for different content");
             }
+            if trusted {tx.execute("INSERT OR IGNORE INTO trusted_access_endpoints(endpoint_id,owner) VALUES(?,?)",params![request.id.to_string(),owner])?;}
+            tx.commit()?;
             Ok(endpoint)
+        }).await
+    }
+    pub async fn rebind(
+        &self,
+        owner: &str,
+        id: Uuid,
+        revision: u64,
+        request: CreateEndpoint,
+    ) -> Result<Option<AccessEndpoint>> {
+        self.rebind_with_trust(owner, id, revision, request, false)
+            .await
+    }
+    pub async fn rebind_with_trust(
+        &self,
+        owner: &str,
+        id: Uuid,
+        revision: u64,
+        request: CreateEndpoint,
+        trusted: bool,
+    ) -> Result<Option<AccessEndpoint>> {
+        ensure!(request.id == id, "endpoint identity mismatch");
+        request.validate()?;
+        let owner = owner.to_owned();
+        self.run(move |conn| {
+            let tx=conn.transaction()?;
+            let Some(mut current)=tx.query_row("SELECT id,owner,device_id,environment_id,binding_json,container_port,protocol,tls_server_name,name,management_url,enabled,revision,public_url,created_unix,updated_unix FROM access_endpoints WHERE owner=? AND id=?",params![owner,id.to_string()],row_endpoint).optional()? else{return Ok(None)};
+            ensure!(current.definition.revision==revision,"endpoint revision conflict");
+            current.definition=EndpointDefinition{id,revision:revision.checked_add(1).context("endpoint revision exhausted")?,device_id:request.device_id,environment_id:request.environment_id,binding:request.binding,container_port:request.container_port,protocol:request.protocol,tls_server_name:request.tls_server_name};
+            current.updated_unix=crate::protocol::unix_now();
+            tx.execute("UPDATE access_endpoints SET device_id=?,environment_id=?,binding_json=?,container_port=?,protocol=?,tls_server_name=?,revision=?,updated_unix=? WHERE owner=? AND id=?",params![current.definition.device_id.to_string(),current.definition.environment_id,serde_json::to_string(&current.definition.binding)?,current.definition.container_port,protocol_name(&current.definition.protocol),current.definition.tls_server_name,current.definition.revision,current.updated_unix,owner,id.to_string()])?;
+            if trusted {tx.execute("INSERT OR IGNORE INTO trusted_access_endpoints(endpoint_id,owner) VALUES(?,?)",params![id.to_string(),owner])?;}
+            tx.commit()?;Ok(Some(current))
         }).await
     }
     pub async fn patch(
@@ -283,7 +373,7 @@ impl EndpointStore {
             if let Some(name) = patch.name { current.name = name.trim().to_owned(); }
             if let Some(enabled) = patch.enabled { current.enabled = enabled; }
             if let Some(url) = patch.management_url { current.management_url = url; }
-            current.definition.revision += 1; current.updated_unix = crate::protocol::unix_now();
+            current.definition.revision = current.definition.revision.checked_add(1).context("endpoint revision exhausted")?; current.updated_unix = crate::protocol::unix_now();
             tx.execute("UPDATE access_endpoints SET name=?,management_url=?,enabled=?,revision=?,updated_unix=? WHERE owner=? AND id=? AND revision=?", params![current.name,current.management_url,current.enabled,current.definition.revision,current.updated_unix,owner,id.to_string(),patch.revision])?;
             tx.commit()?; Ok(Some(current))
         }).await
@@ -291,12 +381,13 @@ impl EndpointStore {
     pub async fn delete(&self, owner: &str, id: Uuid, revision: u64) -> Result<bool> {
         let owner = owner.to_owned();
         self.run(move |conn| {
-            let changed = conn.execute(
+            let tx = conn.transaction()?;
+            let changed = tx.execute(
                 "DELETE FROM access_endpoints WHERE owner=? AND id=? AND revision=?",
                 params![owner, id.to_string(), revision],
             )?;
             if changed == 0 {
-                let exists: bool = conn.query_row(
+                let exists: bool = tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM access_endpoints WHERE owner=? AND id=?)",
                     params![owner, id.to_string()],
                     |r| r.get(0),
@@ -304,11 +395,12 @@ impl EndpointStore {
                 ensure!(!exists, "endpoint revision conflict");
             }
             if changed == 1 {
-                conn.execute(
+                tx.execute(
                     "DELETE FROM trusted_access_endpoints WHERE endpoint_id=? AND owner=?",
                     params![id.to_string(), owner],
                 )?;
             }
+            tx.commit()?;
             Ok(changed == 1)
         })
         .await
@@ -397,6 +489,61 @@ mod tests {
         );
         assert!(store.delete("alice", id, 1).await.unwrap());
         assert!(!store.is_trusted(id).await.unwrap());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[tokio::test]
+    async fn explicit_rebind_preserves_entry_and_guards_owner_and_revision() {
+        let dir = std::env::temp_dir().join(format!("cofleet-rebind-{}", Uuid::new_v4()));
+        let store = EndpointStore::open(&dir).await.unwrap();
+        let id = Uuid::new_v4();
+        let first = store
+            .create_with_trust("alice", request(id), "https://stable.example/".into(), true)
+            .await
+            .unwrap();
+        assert!(store.is_trusted(id).await.unwrap());
+        let disabled = store
+            .patch(
+                "alice",
+                id,
+                PatchEndpoint {
+                    revision: 1,
+                    name: Some("keep name".into()),
+                    enabled: Some(false),
+                    management_url: None,
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let mut target = request(id);
+        target.environment_id = "new-engine".into();
+        assert!(
+            store
+                .rebind_with_trust("bob", id, 2, target.clone(), true)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .rebind_with_trust("alice", id, 1, target.clone(), true)
+                .await
+                .is_err()
+        );
+        let result = store
+            .rebind_with_trust("alice", id, 2, target.clone(), true)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.public_url, first.public_url);
+        assert_eq!(result.name, disabled.name);
+        assert!(!result.enabled);
+        assert_eq!(result.definition.revision, 3);
+        assert_eq!(result.definition.device_id, target.device_id);
+        assert_eq!(result.definition.environment_id, target.environment_id);
+        let reopened = EndpointStore::open(&dir).await.unwrap();
+        assert_eq!(reopened.get("alice", id).await.unwrap().unwrap(), result);
+        assert!(reopened.is_trusted(id).await.unwrap());
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[tokio::test]

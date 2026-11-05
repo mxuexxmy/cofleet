@@ -8,7 +8,7 @@ const { chromium } = createRequire(import.meta.url)('playwright');
 const root = new URL('../', import.meta.url);
 const now = Math.floor(Date.now() / 1000);
 const node = (id, name, extra = {}) => ({ device_id: id, name, os: 'linux', arch: 'x86_64', online: true, accepting_tasks: true, last_seen_unix: now, version: '0.4.0',
-  docker_observe: { environment_id: 'local-fixture', catalog_page_limit: 50, log_line_limit: 500, endpoint_tunnel: true },
+  docker_observe: { environment_id: 'local-fixture', catalog_page_limit: 50, log_line_limit: 500, endpoint_tunnel: true, engine_verified: true },
   resources: { cpu_usage_percent: 23.4, logical_cpus: 16, available_memory_bytes: 24 * 1024 ** 3, total_memory_bytes: 32 * 1024 ** 3, storage: { available_bytes: 180 * 1024 ** 3, total_bytes: 512 * 1024 ** 3 }, age_secs: 1, sampled_at_unix: now, uptime_secs: 24000 },
   planning_capacity: { cpu_threads: 12, memory_bytes: 24 * 1024 ** 3 }, resource_policy: { reserved_cpu_threads: 4, reserved_memory_mib: 8192 },
   workspace: { desired_running: true, healthy: true, project_service_healthy: true, state: 'running', project_path: '/projects', volume: 'workspace-projects' },
@@ -20,10 +20,13 @@ const node = (id, name, extra = {}) => ({ device_id: id, name, os: 'linux', arch
   ] }, ...extra });
 let nodes = [node('dev-a', '家中的开发主机'), node('dev-b', '随身电脑'), node('dev-c', '一台名称很长的 Windows 与 WSL 协作电脑用于测试换行', { online: false, workspace: null })];
 let unavailable = false, loseOperation = false, logDelay = 0;
+let currentOwner = 'development', catalogEnvironment = 'local-fixture', loseEndpoint = '', failBeforeCreate = false, holdEndpointResponse = false, releaseEndpointResponse = null;
+const endpointCalls = [];
 const requests = [], plans = [], endpoints = [];
 const server = http.createServer(async (req, res) => {
-  const pathname = new URL(req.url, 'http://localhost').pathname;
-  const json = (value, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
+  const pathname = new URL(req.url, 'http://localhost').pathname, owner = currentOwner;
+  const json = (value, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json', 'X-CoFleet-Scope': owner }); res.end(JSON.stringify(value)); };
+  if (pathname === '/api/whoami') return json({ user: owner, scope: owner });
   if (pathname === '/api/v1/auth-mode') return json({ auth: 'development', access_mode: 'trusted_prefix' });
   if (pathname === '/api/v1/workspace-session') return json({});
   if (pathname === '/api/v1/devices') return json(nodes, unavailable ? 503 : 200);
@@ -33,16 +36,29 @@ const server = http.createServer(async (req, res) => {
   }
   if (pathname.startsWith('/api/v1/workloads/')) { plans.length = 0; return json({}); }
   if (pathname === '/api/v1/access-endpoints') {
-    if (req.method === 'POST') { let body = ''; for await (const chunk of req) body += chunk; const value = JSON.parse(body); const endpoint = { ...value, owner: 'development', enabled: true, revision: 1, public_url: 'https://e-' + value.id + '.apps.example/', created_unix: now, updated_unix: now }; endpoints.push(endpoint); return json(endpoint, 201); }
-    return json(endpoints);
+    if (req.method === 'POST') {
+      let body = ''; for await (const chunk of req) body += chunk; const value = JSON.parse(body); endpointCalls.push({ method: req.method, body: value });
+      const existing = endpoints.find(e => e.id === value.id && e.owner === owner);
+      const endpoint = existing || { ...value, owner, enabled: true, revision: 1, public_url: 'https://e-' + value.id + '.apps.example/', created_unix: now, updated_unix: now };
+      if (failBeforeCreate) { failBeforeCreate = false; return json({ error: 'acceptance unknown' }, 504); }
+      if (!existing) endpoints.push(endpoint);
+      if (holdEndpointResponse) { holdEndpointResponse = false; await new Promise(resolve => { releaseEndpointResponse = resolve; }); }
+      if (loseEndpoint === req.method) { loseEndpoint = ''; return json({ error: 'response unavailable after acceptance' }, 504); }
+      return json(endpoint, 201);
+    }
+    return json(endpoints.filter(e => e.owner === owner));
   }
   if (pathname.startsWith('/api/v1/access-endpoints/')) {
-    const id = pathname.split('/').pop(), index = endpoints.findIndex(value => value.id === id);
+    const id = pathname.endsWith('/binding') ? pathname.split('/').at(-2) : pathname.split('/').pop(), index = endpoints.findIndex(value => value.id === id && value.owner === owner);
     if (index < 0) return json({}, 404);
-    if (req.method === 'DELETE') { endpoints.splice(index, 1); res.writeHead(204); return res.end(); }
-    let body = ''; for await (const chunk of req) body += chunk; const change = JSON.parse(body); endpoints[index] = { ...endpoints[index], ...change, revision: endpoints[index].revision + 1 }; return json(endpoints[index]);
+    if (req.method === 'DELETE') { endpointCalls.push({ method: req.method, id }); endpoints.splice(index, 1); if (loseEndpoint === req.method) { loseEndpoint = ''; return json({ error: 'response unavailable after acceptance' }, 504); } res.writeHead(204, { 'X-CoFleet-Scope': owner }); return res.end(); }
+    let body = ''; for await (const chunk of req) body += chunk; const change = JSON.parse(body); endpointCalls.push({ method: req.method, body: change });
+    if (change.revision !== endpoints[index].revision) return json({ message: 'revision conflict' }, 409);
+    endpoints[index] = { ...endpoints[index], ...change, revision: endpoints[index].revision + 1 };
+    if (loseEndpoint === req.method) { loseEndpoint = ''; return json({ error: 'response unavailable after acceptance' }, 504); }
+    return json(endpoints[index]);
   }
-  if (pathname.endsWith('/docker/catalog')) return json({ result: 'catalog', page: { environment_id: 'local-fixture', snapshot_id: '00000000-0000-4000-8000-000000000001', sampled_at_unix: now, next_cursor: null, containers: [{ id: 'a'.repeat(64), name: 'photos', image: 'photos:latest', state: 'running', health: 'healthy', compose_project: 'home', compose_service: 'photos', compose_oneoff: false, ports: [{ container_port: 8080, host_ip: '127.0.0.1', host_port: 18080, supported: true }] }, { id: 'b'.repeat(64), name: 'background-worker', image: 'worker:1', state: 'exited', health: null, compose_project: null, compose_service: null, ports: [] }] } });
+  if (pathname.endsWith('/docker/catalog')) return json({ result: 'catalog', page: { environment_id: catalogEnvironment, snapshot_id: '00000000-0000-4000-8000-000000000001', sampled_at_unix: now, next_cursor: null, containers: [{ id: 'a'.repeat(64), name: 'photos', image: 'photos:latest', state: 'running', health: 'healthy', compose_project: 'home', compose_service: 'photos', compose_oneoff: false, ports: [{ container_port: 8080, host_ip: '127.0.0.1', host_port: 18080, supported: true }] }, { id: 'b'.repeat(64), name: 'background-worker', image: 'worker:1', state: 'exited', health: null, compose_project: null, compose_service: null, ports: [] }] } });
   if (pathname.includes('/docker/containers/') && pathname.endsWith('/logs')) { if (logDelay) await new Promise(resolve => setTimeout(resolve, logDelay)); return json({ result: 'logs', value: { container_id: 'a'.repeat(64), collected_at_unix: now, logs: 'existing application log', truncated: false } }); }
   if (pathname.endsWith('/docker')) {
     let body = ''; for await (const chunk of req) body += chunk;
@@ -151,8 +167,29 @@ try {
   for (const width of [1440, 1024, 390]) { await page.setViewportSize({ width, height: 1000 }); await page.screenshot({ path: new URL('docker-observe-' + width + '.png', output).pathname, fullPage: true }); assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)); }
   await page.setViewportSize({ width: 1440, height: 1100 });
 
-  await page.locator('#endpoint-name').fill('家庭相册'); assert.equal(await page.locator('#endpoint-submit').isDisabled(), true); await page.locator('#endpoint-trust').check(); await page.locator('#endpoint-submit').click(); await page.locator('#endpoint-list .endpoint-row').waitFor(); assert.match(await page.locator('#endpoint-list .endpoint-row').innerText(), /家庭相册/);
-  await page.getByRole('button', { name: '禁用', exact: true }).click(); await page.getByRole('button', { name: '启用', exact: true }).waitFor();
+  await page.locator('#endpoint-name').fill('家庭相册'); assert.equal(await page.locator('#endpoint-submit').isDisabled(), true); await page.locator('#endpoint-trust').check();
+  loseEndpoint = 'POST'; await page.locator('#endpoint-submit').click(); await page.waitForFunction(() => !!pendingEndpoint?.uncertain && !endpointBusy);
+  assert.equal(endpointCalls.filter(v => v.method === 'POST').length, 1);
+  await page.locator('#endpoint-form').dispatchEvent('submit'); assert.equal(endpointCalls.filter(v => v.method === 'POST').length, 1);
+  await page.locator('#endpoint-retry').click(); await page.waitForFunction(() => !pendingEndpoint);
+  assert.equal(endpointCalls.filter(v => v.method === 'POST').length, 1); assert.equal(await page.locator('#endpoint-list .endpoint-row').count(), 1);
+  assert.match(await page.locator('#endpoint-list .endpoint-row').innerText(), /家庭相册/);
+  loseEndpoint = 'PATCH'; await page.getByRole('button', { name: '禁用', exact: true }).click(); await page.waitForFunction(() => !!pendingEndpoint?.uncertain && !endpointBusy);
+  await page.locator('#endpoint-retry').click(); await page.waitForFunction(() => !pendingEndpoint); assert.equal(endpointCalls.filter(v => v.method === 'PATCH').length, 1); assert.equal(endpoints[0].revision, 2);
+  const originalUrl = endpoints[0].public_url;
+  nodes[0].docker_observe.environment_id = catalogEnvironment = 'engine-fixture-2'; await page.evaluate(() => refresh());
+  assert.equal(await page.getByRole('button', { name: '重新确认绑定', exact: true }).isDisabled(), true);
+  await page.locator('#endpoint-discover').click(); await page.waitForFunction(() => observedCatalogs.get('dev-a')?.environment_id === 'engine-fixture-2');
+  assert.equal(await page.locator('#endpoint-trust').isChecked(), false); await page.locator('#endpoint-trust').check();
+  page.once('dialog', d => d.accept()); await page.getByRole('button', { name: '重新确认绑定', exact: true }).click(); await page.waitForFunction(() => !pendingEndpoint && !endpointBusy);
+  assert.equal(endpoints[0].environment_id, 'engine-fixture-2'); assert.equal(endpoints[0].public_url, originalUrl); assert.equal(endpoints[0].revision, 3);
+  failBeforeCreate = true; await page.locator('#endpoint-name').fill('重试入口'); await page.locator('#endpoint-submit').click(); await page.waitForFunction(() => !!pendingEndpoint?.uncertain && !endpointBusy);
+  const retryId = endpointCalls.filter(v => v.method === 'POST').at(-1).body.id;
+  await page.locator('#endpoint-retry').click(); await page.waitForFunction(() => !pendingEndpoint && !endpointBusy);
+  assert.equal(endpointCalls.filter(v => v.method === 'POST').at(-1).body.id, retryId); assert.equal(endpoints.filter(e => e.id === retryId).length, 1);
+  loseEndpoint = 'DELETE'; page.once('dialog', d => d.accept()); await page.locator('#endpoint-list .endpoint-row').filter({ hasText: '重试入口' }).getByRole('button', { name: '删除入口' }).click(); await page.waitForFunction(() => !!pendingEndpoint?.uncertain && !endpointBusy);
+  await page.locator('#endpoint-retry').click(); await page.waitForFunction(() => !pendingEndpoint); assert.equal(endpointCalls.filter(v => v.method === 'DELETE').length, 1);
+
   await page.locator('#nav-scheduler').click(); await page.locator('#schedule-memory').fill('2048'); await page.evaluate(() => refresh()); assert.equal(await page.locator('#schedule-memory').inputValue(), '2048');
   await page.locator('#schedule-submit').click(); await page.locator('.workload-row').waitFor(); assert.match(await page.locator('#schedule-notice').innerText(), /已选择匹配节点/);
   await page.evaluate(() => refresh()); assert.match(await page.locator('#schedule-notice').innerText(), /已选择匹配节点/);
@@ -168,7 +205,20 @@ try {
   await page.locator('.mobile-back').click(); assert.equal(await page.locator('.fleet').isVisible(), true);
   nodes = [node('bare', '未配置的设备', { workspace: null, pipeline: null, docker: null })]; await page.evaluate(() => refresh()); await page.locator('.device').click(); await page.locator('#tab-workspace').click(); assert.match(await page.locator('#device-panel').innerText(), /未启用/);
   await page.locator('#logout').click(); assert.equal(await page.evaluate(() => observedCatalogs.size + observedLogs.size + observedTargets.size), 0); assert.equal(await page.locator('#search').inputValue(), '');
+  nodes = [node('dev-a', '家中的开发主机', { docker_observe: { environment_id: catalogEnvironment, catalog_page_limit: 50, log_line_limit: 500, endpoint_tunnel: true, engine_verified: true } })];
+  await page.locator('#token').fill('fixture-token'); await page.locator('#login button').click(); await page.locator('.device').first().waitFor();
+  await page.locator('#nav-applications').click(); await page.locator('#endpoint-discover').click(); await page.locator('#endpoint-target').selectOption({ index: 1 }); await page.locator('#endpoint-name').fill('旧会话入口'); await page.locator('#endpoint-trust').check();
+  holdEndpointResponse = true; await page.locator('#endpoint-submit').click(); await page.waitForFunction(() => endpointBusy); while (!releaseEndpointResponse) await new Promise(resolve => setTimeout(resolve, 20));
+  await page.locator('#logout').click(); currentOwner = 'second-account';
+  await page.locator('#token').fill('fixture-token'); await page.locator('#login button').click(); await page.waitForFunction(() => fresh && activeIdentity === 'second-account');
+  releaseEndpointResponse(); await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(() => endpoints.length), 0); assert.equal(await page.evaluate(() => pendingEndpoint), null);
+  await page.locator('#nav-applications').click(); assert.doesNotMatch(await page.locator('#endpoint-list').innerText(), /旧会话入口/);
+  // Identity changes outside the explicit logout path clear account-scoped drafts too.
+  await page.locator('#endpoint-name').fill('another account draft'); currentOwner = 'third-account'; await page.evaluate(() => refresh());
+  assert.equal(await page.locator('#endpoint-name').inputValue(), ''); assert.equal(await page.evaluate(() => observedCatalogs.size), 0);
+  await page.locator('#logout').click();
   nodes = []; await page.locator('#token').fill('fixture-token'); await page.locator('#login button').click(); await page.waitForFunction(() => fresh); assert.match(await page.locator('#empty').innerText(), /启动 Agent/);
   assert.deepEqual(errors, []);
-  console.log('PASS navigation, live polling focus/caret, per-device drafts, build selection, log scroll/disclosure, confirmations, request-ID retry, stale/offline states, schedule feedback, mobile, empty states, logout');
+  console.log('PASS endpoint lost-response reconciliation, engine rebind, account isolation; navigation, live polling focus/caret, per-device drafts, build selection, log scroll/disclosure, confirmations, request-ID retry, stale/offline states, schedule feedback, mobile, empty states, logout');
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }

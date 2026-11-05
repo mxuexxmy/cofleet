@@ -24,3 +24,5 @@ pub mod workspace_proxy;
 pub mod pipeline;
 
 pub mod access_sessions;
+
+pub mod user_service;

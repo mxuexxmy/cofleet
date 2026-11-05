@@ -18,6 +18,7 @@ pub struct Hub {
     tunnels: crate::workspace_proxy::Tunnels,
     records: Arc<RwLock<HashMap<(String, Uuid), Record>>>,
     scheduler: Arc<tokio::sync::Mutex<crate::scheduler::Scheduler>>,
+    store: Option<crate::access::EndpointStore>,
 }
 struct Session {
     id: Uuid,
@@ -28,6 +29,7 @@ struct Record {
     state: Heartbeat,
     seen_at: Instant,
     last_seen: u64,
+    last_saved: Instant,
     session: Option<Session>,
     last_report: Option<Uuid>,
     pending_reports: Vec<Uuid>,
@@ -55,6 +57,30 @@ pub struct Device {
     pub planning_capacity: Option<crate::resources::PlanningCapacity>,
 }
 impl Hub {
+    pub async fn persistent(store: crate::access::EndpointStore) -> anyhow::Result<Self> {
+        let hub = Self {
+            store: Some(store.clone()),
+            ..Default::default()
+        };
+        for (owner, state, last_seen) in store.saved_devices().await? {
+            hub.records.write().await.insert(
+                (owner, state.device_id),
+                Record {
+                    state,
+                    last_seen,
+                    last_saved: Instant::now(),
+                    seen_at: Instant::now(),
+                    session: None,
+                    tunnel_slots: Arc::new(tokio::sync::Semaphore::new(32)),
+                    last_report: None,
+                    pending_reports: Vec::new(),
+                    pending_docker: HashMap::new(),
+                    pending_observe: HashMap::new(),
+                },
+            );
+        }
+        Ok(hub)
+    }
     async fn schedule_nodes(&self, user: &str) -> Vec<crate::scheduler::ScheduleNode> {
         self.records
             .read()
@@ -96,7 +122,15 @@ impl Hub {
             .iter()
             .filter(|((owner, _), _)| owner == user)
             .map(|(_, r)| Device {
-                state: r.state.clone(),
+                state: {
+                    let mut state = r.state.clone();
+                    if let Some(resources) = &mut state.resources {
+                        resources.age_secs = resources
+                            .age_secs
+                            .saturating_add(unix_now().saturating_sub(r.last_seen));
+                    }
+                    state
+                },
                 last_seen_unix: r.last_seen,
                 online: r.session.is_some()
                     && r.seen_at.elapsed().as_secs() < (r.state.heartbeat_secs * 3).max(15),
@@ -190,24 +224,25 @@ impl Hub {
         definition: &crate::access::EndpointDefinition,
     ) -> Result<tokio::io::DuplexStream, axum::http::StatusCode> {
         use axum::http::StatusCode;
-        let (session, sender, slots) =
-            {
-                let records = self.records.read().await;
-                let record = records
-                    .get(&(user.into(), definition.device_id))
-                    .ok_or(StatusCode::NOT_FOUND)?;
-                let session = record.session.as_ref().ok_or(StatusCode::CONFLICT)?;
-                if !record.state.docker_observe.as_ref().is_some_and(|c| {
-                    c.endpoint_tunnel && c.environment_id == definition.environment_id
-                }) {
-                    return Err(StatusCode::CONFLICT);
-                }
-                (
-                    session.id,
-                    session.sender.clone(),
-                    record.tunnel_slots.clone(),
-                )
-            };
+        let (session, sender, slots) = {
+            let records = self.records.read().await;
+            let record = records
+                .get(&(user.into(), definition.device_id))
+                .ok_or(StatusCode::NOT_FOUND)?;
+            let session = record.session.as_ref().ok_or(StatusCode::CONFLICT)?;
+            if !record.state.docker_observe.as_ref().is_some_and(|c| {
+                c.endpoint_tunnel
+                    && c.engine_verified
+                    && c.environment_id == definition.environment_id
+            }) {
+                return Err(StatusCode::CONFLICT);
+            }
+            (
+                session.id,
+                session.sender.clone(),
+                record.tunnel_slots.clone(),
+            )
+        };
         self.tunnels
             .open_access(
                 user,
@@ -221,6 +256,19 @@ impl Hub {
     }
     pub fn cancel_access_endpoint(&self, user: &str, endpoint: Uuid) {
         self.tunnels.cancel_access(user, endpoint);
+    }
+    pub async fn verified_environment(&self, user: &str, device: Uuid, environment: &str) -> bool {
+        self.records
+            .read()
+            .await
+            .get(&(user.into(), device))
+            .is_some_and(|r| {
+                r.session.is_some()
+                    && r.seen_at.elapsed().as_secs() < (r.state.heartbeat_secs * 3).max(15)
+                    && r.state.docker_observe.as_ref().is_some_and(|c| {
+                        c.engine_verified && c.endpoint_tunnel && c.environment_id == environment
+                    })
+            })
     }
     pub async fn current_session(&self, user: &str, device: Uuid) -> Option<Uuid> {
         self.records
@@ -377,12 +425,18 @@ impl Hub {
         sender: mpsc::Sender<HubMessage>,
     ) -> Option<Uuid> {
         let mut records = self.records.write().await;
-        records.retain(|_, r| r.session.is_some() || r.seen_at.elapsed().as_secs() < 86400);
+
         let key = (user.into(), state.device_id);
         if !records.contains_key(&key)
             && (records.len() >= 4096
                 || records.keys().filter(|(owner, _)| owner == user).count() >= 256)
         {
+            return None;
+        }
+        if let Some(store) = &self.store
+            && let Err(error) = store.save_device(user, &state, unix_now()).await
+        {
+            eprintln!("cannot persist device snapshot: {error}");
             return None;
         }
         let id = Uuid::new_v4();
@@ -395,6 +449,7 @@ impl Hub {
                 state,
                 seen_at: Instant::now(),
                 last_seen: unix_now(),
+                last_saved: Instant::now(),
                 session: Some(Session { id, sender }),
                 last_report: None,
                 pending_reports: Vec::new(),
@@ -422,6 +477,15 @@ impl Hub {
             record.pending_reports.remove(position);
             record.last_report = Some(report);
         }
+        if let Some(store) = &self.store
+            && (record.last_saved.elapsed() >= Duration::from_secs(5) || report.is_some())
+        {
+            if let Err(error) = store.save_device(user, &state, unix_now()).await {
+                eprintln!("cannot persist device snapshot: {error}");
+                return false;
+            }
+            record.last_saved = Instant::now();
+        }
         record.state = state;
         record.seen_at = Instant::now();
         record.last_seen = unix_now();
@@ -433,6 +497,13 @@ impl Hub {
             && record.session.as_ref().map(|s| s.id) == Some(session)
         {
             record.session = None;
+            if let Some(store) = &self.store
+                && let Err(error) = store
+                    .save_device(user, &record.state, record.last_seen)
+                    .await
+            {
+                eprintln!("cannot persist final device snapshot: {error}");
+            }
             record.pending_reports.clear();
             record.pending_docker.clear();
             record.pending_observe.clear();
@@ -545,6 +616,22 @@ mod tests {
             resource_policy: Default::default(),
             capabilities: Default::default(),
         }
+    }
+    #[tokio::test]
+    async fn corrupt_registry_is_not_silently_discarded() {
+        let directory = std::env::temp_dir().join(format!("cofleet-registry-{}", Uuid::new_v4()));
+        let store = crate::access::EndpointStore::open(&directory)
+            .await
+            .unwrap();
+        let conn = rusqlite::Connection::open(directory.join("state.sqlite3")).unwrap();
+        conn.execute(
+            "INSERT INTO device_snapshots VALUES('alice','invalid','not-json',0)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        assert!(Hub::persistent(store).await.is_err());
+        std::fs::remove_dir_all(directory).unwrap();
     }
     #[tokio::test]
     async fn docker_results_are_scoped_to_owner_and_current_session() {

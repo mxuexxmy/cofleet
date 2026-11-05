@@ -338,12 +338,23 @@ pub(super) async fn dispatch(front: Front, peer: SocketAddr, request: Request) -
     {
         return StatusCode::FORBIDDEN.into_response();
     }
+    let response_owner = if request.uri().path().starts_with("/api/") {
+        front.app.auth.identify(request.headers(), peer.ip()).ok()
+    } else {
+        None
+    };
     let mut response = front
         .management
         .clone()
         .oneshot(request)
         .await
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    if let Some(owner) = response_owner {
+        response.headers_mut().insert(
+            "x-cofleet-scope",
+            cofleet::auth::owner_scope(&owner).parse().unwrap(),
+        );
+    }
     if let Some(token) = issue {
         set(&mut response, sessions::MANAGER_COOKIE, &token, 8 * 3600);
         response

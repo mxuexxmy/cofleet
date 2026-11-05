@@ -5,6 +5,7 @@ param(
     [string] $DataDir = "$env:LOCALAPPDATA\cofleet\cofleet\data",
     [string] $InstallDir = "$env:LOCALAPPDATA\CoFleet\bin",
     [switch] $Docker,
+    [switch] $DockerObserve,
     [string] $WorkspaceImage,
     [switch] $BuildDeploy
 )
@@ -21,6 +22,7 @@ if ($agentSource -ne $agent) { Copy-Item -Force -LiteralPath $agentSource -Desti
 if ($traySource -ne $tray) { Copy-Item -Force -LiteralPath $traySource -Destination $tray }
 $agentArguments = @('--data-dir', ('"{0}"' -f $DataDir))
 if ($Docker) { $agentArguments += '--docker' }
+if ($DockerObserve) { $agentArguments += '--docker-observe' }
 if ($WorkspaceImage) { $agentArguments += @('--workspace-image', $WorkspaceImage) }
 if ($BuildDeploy) { $agentArguments += '--build-deploy' }
 $startup = [Environment]::GetFolderPath('Startup')

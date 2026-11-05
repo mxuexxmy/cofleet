@@ -63,7 +63,7 @@ mode_file.write_text('real')
 import os, sys
 from pathlib import Path
 args = sys.argv[3:]
-assert args[0] in ('ps', 'inspect', 'logs'), 'Unexpected Docker mutation'
+assert args[0] in ('ps', 'inspect', 'logs', 'info'), 'Unexpected Docker mutation'
 mode = Path({str(mode_file)!r}).read_text()
 if mode == 'empty' and args[0] == 'ps': sys.exit(0)
 if mode == 'many' and args[0] == 'ps':

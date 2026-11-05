@@ -1,0 +1,48 @@
+{
+  "version": "0.8.0",
+  "date": "2026-11-06",
+  "service": {
+    "installed": true,
+    "enabled": true,
+    "stable_executable": true,
+    "failure_restart_reconnected": true,
+    "same_node_identity": true
+  },
+  "registry": {
+    "manager_restart_preserves_offline_snapshot": true,
+    "snapshot_marked_offline_in_browser": true,
+    "resource_age_advances": true,
+    "same_device_reconnects_without_duplicate": true,
+    "workspace_volume_preserved": true,
+    "current_and_previous_release_preserved": true,
+    "version": "0.8.0"
+  },
+  "access": {
+    "trusted_consent_and_creation": true,
+    "automatic_prefix_host_tls_and_platform_identity": true,
+    "browser_bound_authorization": true,
+    "http_service_access": true,
+    "health_path": true,
+    "host_only_access_cookie": true,
+    "management_cookie_not_sent_to_app": true,
+    "application_host_not_management_api": true,
+    "disable_denies_access": true,
+    "enable_requires_fresh_grant": true,
+    "manager_logout_revokes_access": true,
+    "browser_errors_absent": true,
+    "application_cookie_login": true,
+    "application_authorization_preserved": true,
+    "identity_and_gateway_cookies_stripped": true,
+    "websocket_echo": true,
+    "logout_closes_live_websocket": true
+  },
+  "existing_endpoint_urls_preserved": true,
+  "node_config_and_legacy_observer_state_unchanged": true,
+  "linux_service_upgrade_completed": true,
+  "limitations": [
+    "Windows and WSL real lifecycle not tested.",
+    "No real logout or computer reboot performed.",
+    "Second real account and platform-side logout not tested.",
+    "Trusted applications only; shared-parent ordinary Cookie pollution remains possible."
+  ]
+}

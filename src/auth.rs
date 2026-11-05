@@ -56,6 +56,12 @@ impl Authenticator {
     }
 }
 
+/// Non-secret response scope, used to reject late data from a previous browser account.
+pub fn owner_scope(owner: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(owner.as_bytes()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

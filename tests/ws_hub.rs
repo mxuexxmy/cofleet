@@ -325,6 +325,7 @@ async fn observation_results_and_persisted_endpoint_api_are_owner_scoped() {
         catalog_page_limit: 50,
         log_line_limit: 500,
         endpoint_tunnel: true,
+        engine_verified: true,
     });
     let (mut agent, _) = connect_async(manager.ws_request("alice")).await.unwrap();
     send(
@@ -514,6 +515,7 @@ async fn trusted_prefix_case(legacy: bool) {
         catalog_page_limit: 50,
         log_line_limit: 500,
         endpoint_tunnel: true,
+        engine_verified: true,
     });
     let mut request = manager.ws_request("alice");
     request
@@ -655,4 +657,116 @@ async fn trusted_prefix_case(legacy: bool) {
         .await
         .unwrap();
     assert_eq!(app_api.status(), 303); // Authorization gate, never the management JSON.
+}
+
+#[tokio::test]
+async fn offline_snapshots_survive_manager_restart_without_restoring_sessions() {
+    let mut manager = Manager::start("127.0.0.1").await;
+    let device = Uuid::new_v4();
+    let (mut alice, _) = connect_async(manager.ws_request("alice")).await.unwrap();
+    let (mut bob, _) = connect_async(manager.ws_request("bob")).await.unwrap();
+    send(
+        &mut alice,
+        AgentMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            state: state(device, "alice pc"),
+        },
+    )
+    .await;
+    receive(&mut alice).await;
+    send(
+        &mut bob,
+        AgentMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            state: state(device, "bob pc"),
+        },
+    )
+    .await;
+    receive(&mut bob).await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/v1/devices/{device}/refresh", manager.url))
+        .header("x-hc-user-id", "alice")
+        .header("x-cofleet-request", "1")
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    let HubMessage::RequestReport { request_id } = receive(&mut alice).await else {
+        panic!("report request expected")
+    };
+    send(
+        &mut alice,
+        AgentMessage::Report {
+            request_id,
+            state: state(device, "latest alice snapshot"),
+        },
+    )
+    .await;
+    receive(&mut alice).await;
+    let last_seen = manager.devices("alice").await[0]["last_seen_unix"].clone();
+    manager.child.kill().unwrap();
+    manager.child.wait().unwrap();
+    manager.child = Command::new(env!("CARGO_BIN_EXE_cofleet-manager"))
+        .args([
+            "--listen",
+            manager.url.trim_start_matches("http://"),
+            "--auth",
+            "lazycat",
+            "--trusted-ingress-ip",
+            "127.0.0.1",
+            "--state-dir",
+            manager.state_dir.to_str().unwrap(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    for _ in 0..100 {
+        if reqwest::get(format!("{}/healthz", manager.url))
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    let restored = manager.devices("alice").await;
+    assert_eq!(restored.as_array().unwrap().len(), 1);
+    assert_eq!(restored[0]["name"], "latest alice snapshot");
+    assert_eq!(restored[0]["online"], false);
+    assert_eq!(restored[0]["last_seen_unix"], last_seen);
+    assert!(restored[0]["last_report_id"].is_null());
+    assert_eq!(manager.devices("bob").await[0]["name"], "bob pc");
+    assert_eq!(manager.devices("bob").await[0]["online"], false);
+    assert!(
+        manager
+            .devices("charlie")
+            .await
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let rejected = reqwest::Client::new()
+        .post(format!("{}/api/v1/devices/{device}/refresh", manager.url))
+        .header("x-hc-user-id", "alice")
+        .header("x-cofleet-request", "1")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), 409);
+    let (mut replacement, _) = connect_async(manager.ws_request("alice")).await.unwrap();
+    send(
+        &mut replacement,
+        AgentMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            state: state(device, "alice reconnected"),
+        },
+    )
+    .await;
+    receive(&mut replacement).await;
+    let live = manager.devices("alice").await;
+    assert_eq!(live.as_array().unwrap().len(), 1);
+    assert_eq!(live[0]["name"], "alice reconnected");
+    assert_eq!(live[0]["online"], true);
+    assert_eq!(manager.devices("bob").await[0]["online"], false);
 }

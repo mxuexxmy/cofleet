@@ -19,6 +19,8 @@ pub struct ObserveCapability {
     pub catalog_page_limit: u16,
     pub log_line_limit: u16,
     pub endpoint_tunnel: bool,
+    #[serde(default)]
+    pub engine_verified: bool,
 }
 impl ObserveCapability {
     pub fn valid(&self) -> bool {
@@ -108,6 +110,8 @@ struct Persisted {
     device_id: Uuid,
     environment_id: String,
     definitions: HashMap<Uuid, EndpointDefinition>,
+    #[serde(default)]
+    engine_fingerprint: Option<String>,
 }
 struct Cache {
     id: Uuid,
@@ -123,17 +127,18 @@ struct Inner {
 #[derive(Clone)]
 pub struct DockerObserver {
     dir: PathBuf,
-    environment_id: String,
+    capability: Arc<std::sync::RwLock<ObserveCapability>>,
+    engine_check: Arc<Mutex<()>>,
     inner: Arc<Mutex<Inner>>,
 }
 impl DockerObserver {
-    pub fn open(dir: &Path, device_id: Uuid) -> Result<Self> {
+    pub async fn open(dir: &Path, device_id: Uuid) -> Result<Self> {
         ensure!(
             cfg!(any(target_os = "linux", target_os = "windows")),
             "Docker observation is supported on Linux and Windows"
         );
-        let environment_id = environment_id(device_id);
-        let path = dir.join("docker-observe-state.json");
+        let environment_id = format!("engine-unverified-{}", device_id.simple());
+        let path = dir.join("docker-observe-v2-state.json");
         let persisted = match std::fs::read(&path) {
             Ok(bytes) => serde_json::from_slice::<Persisted>(&bytes)
                 .context("invalid Docker observation state; refusing to reset")?,
@@ -141,32 +146,96 @@ impl DockerObserver {
                 device_id,
                 environment_id: environment_id.clone(),
                 definitions: HashMap::new(),
+                engine_fingerprint: None,
             },
             Err(error) => return Err(error.into()),
         };
         ensure!(
-            persisted.device_id == device_id && persisted.environment_id == environment_id,
+            persisted.device_id == device_id,
             "Docker observation state belongs to another device or environment"
         );
-        Ok(Self {
+        let observer = Self {
             dir: dir.into(),
-            environment_id,
+            capability: Arc::new(std::sync::RwLock::new(ObserveCapability {
+                environment_id: persisted.environment_id.clone(),
+                catalog_page_limit: 50,
+                log_line_limit: 500,
+                endpoint_tunnel: false,
+                engine_verified: false,
+            })),
+            engine_check: Arc::new(Mutex::new(())),
             inner: Arc::new(Mutex::new(Inner {
                 persisted,
                 cache: None,
             })),
-        })
+        };
+        // Docker can be unavailable during login; keep the Agent running, with tunnels disabled.
+        let _ = observer.refresh_engine().await;
+        Ok(observer)
     }
     pub fn capability(&self) -> ObserveCapability {
-        ObserveCapability {
-            environment_id: self.environment_id.clone(),
-            catalog_page_limit: 50,
-            log_line_limit: 500,
-            endpoint_tunnel: true,
+        self.capability.read().unwrap().clone()
+    }
+    pub async fn refresh_engine(&self) -> Result<String> {
+        let _check = self.engine_check.lock().await;
+        let result = async {
+            let output = tokio::time::timeout(
+                Duration::from_secs(3),
+                crate::docker::docker(&["info", "--format", "{{.ID}}"]),
+            )
+            .await
+            .context("Docker engine identity check timed out")??;
+            let id = output.trim();
+            ensure!(
+                (8..=256).contains(&id.len())
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b':' | b'-' | b'_')),
+                "Docker engine did not return a valid identity"
+            );
+            let fingerprint = format!("{:x}", Sha256::digest(id.as_bytes()));
+            let mut inner = self.inner.lock().await;
+            let environment = environment_id(inner.persisted.device_id, &fingerprint);
+            if inner.persisted.engine_fingerprint.as_deref() != Some(&fingerprint) {
+                let mut next = inner.persisted.clone();
+                next.environment_id = environment.clone();
+                next.engine_fingerprint = Some(fingerprint);
+                next.definitions.clear();
+                persist(&self.dir, &next)?;
+                inner.persisted = next;
+                inner.cache = None;
+            }
+            let mut capability = self.capability.write().unwrap();
+            capability.environment_id = environment.clone();
+            capability.engine_verified = true;
+            capability.endpoint_tunnel = true;
+            Ok::<_, anyhow::Error>(environment)
         }
+        .await;
+        if result.is_err() {
+            {
+                let mut capability = self.capability.write().unwrap();
+                capability.engine_verified = false;
+                capability.endpoint_tunnel = false;
+            }
+            let mut inner = self.inner.lock().await;
+            inner.persisted.definitions.clear();
+            inner.cache = None;
+        }
+        result
     }
     pub async fn execute(&self, request: ObserveRequest) -> ObserveReply {
-        match self.execute_inner(request).await {
+        match async {
+            let environment = self.refresh_engine().await?;
+            let reply = self.execute_inner(request).await?;
+            ensure!(
+                self.refresh_engine().await? == environment,
+                "Docker 环境在操作期间发生变化，请重新读取容器。"
+            );
+            Ok::<_, anyhow::Error>(reply)
+        }
+        .await
+        {
             Ok(reply) => reply,
             Err(error) => ObserveReply::error(error),
         }
@@ -287,19 +356,31 @@ impl DockerObserver {
         &self,
         definition: &EndpointDefinition,
     ) -> Result<AccessResolution> {
+        let environment = self.refresh_engine().await?;
         let capability = self.capability();
         ensure!(
             definition.environment_id == capability.environment_id,
-            "Docker environment changed"
+            "Docker 环境已变化，请重新选择容器并确认绑定。"
         );
-        let all = collect().await?;
-        resolve_from(&all, definition)
+        let all = match &definition.binding {
+            EndpointBinding::Container { container_id } => {
+                vec![observed(inspect_one(container_id).await?)?]
+            }
+            EndpointBinding::Compose { .. } => collect().await?,
+        };
+        let resolution = resolve_from(&all, definition)?;
+        ensure!(
+            self.refresh_engine().await? == environment,
+            "Docker 环境在解析期间变化，请重试。"
+        );
+        Ok(resolution)
     }
     pub async fn resolve_authorized(
         &self,
         endpoint: Uuid,
         revision: u64,
     ) -> Result<AccessResolution> {
+        self.refresh_engine().await?;
         let definition = {
             let inner = self.inner.lock().await;
             inner
@@ -322,13 +403,14 @@ impl DockerObserver {
     }
 }
 
-fn environment_id(device: Uuid) -> String {
+fn environment_id(device: Uuid, fingerprint: &str) -> String {
     let mut hash = Sha256::new();
-    hash.update(b"cofleet-docker-observe-v1\0");
+    hash.update(b"cofleet-docker-observe-v2\0");
+    hash.update(fingerprint.as_bytes());
     hash.update(device.as_bytes());
     hash.update(std::env::consts::OS.as_bytes());
     hash.update(local_host().as_bytes());
-    format!("local-{:x}", hash.finalize())
+    format!("engine-v2-{:x}", hash.finalize())
 }
 fn local_host() -> &'static str {
     #[cfg(target_os = "linux")]
@@ -529,7 +611,7 @@ fn persist(dir: &Path, value: &Persisted) -> Result<()> {
         file.write_all(&serde_json::to_vec(value)?)?;
         file.sync_all()?;
         drop(file);
-        std::fs::rename(&tmp, dir.join("docker-observe-state.json"))?;
+        std::fs::rename(&tmp, dir.join("docker-observe-v2-state.json"))?;
         std::fs::File::open(dir)?.sync_all()?;
         Ok(())
     })();

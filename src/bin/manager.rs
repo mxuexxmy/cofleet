@@ -6,7 +6,7 @@ use axum::{
     extract::{ConnectInfo, DefaultBodyLimit, Path, Query, Request, State, WebSocketUpgrade},
     http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Response},
-    routing::{any, delete, get, patch, post},
+    routing::{any, delete, get, patch, post, put},
 };
 use clap::Parser;
 use cofleet::{
@@ -129,7 +129,7 @@ fn access_public_url(id: uuid::Uuid, domain: &str) -> String {
     )
 }
 async fn endpoint_view(app: &App, endpoint: cofleet::access::AccessEndpoint) -> EndpointView {
-    let status = app
+    let mut status = app
         .endpoint_status
         .read()
         .await
@@ -144,6 +144,23 @@ async fn endpoint_view(app: &App, endpoint: cofleet::access::AccessEndpoint) -> 
             detail: None,
             verified_unix: None,
         });
+    if endpoint.enabled
+        && !app
+            .hub
+            .verified_environment(
+                &endpoint.owner,
+                endpoint.definition.device_id,
+                &endpoint.definition.environment_id,
+            )
+            .await
+    {
+        status.verification = "error";
+        status.verified_unix = None;
+        status.detail = Some(
+            "设备离线、Agent 未核验引擎或 Docker 环境已变化；请重新读取容器，必要时重新确认绑定。"
+                .into(),
+        );
+    }
     EndpointView { endpoint, status }
 }
 async fn sync_endpoint(
@@ -156,6 +173,22 @@ async fn sync_endpoint(
         EndpointStatus {
             verification: "disabled",
             detail: None,
+            verified_unix: None,
+        }
+    } else if !app
+        .hub
+        .verified_environment(
+            user,
+            endpoint.definition.device_id,
+            &endpoint.definition.environment_id,
+        )
+        .await
+    {
+        EndpointStatus {
+            verification: "error",
+            detail: Some(
+                "设备离线或 Docker 环境尚未核验，请升级 Agent、重新读取容器并确认绑定。".into(),
+            ),
             verified_unix: None,
         }
     } else {
@@ -281,6 +314,16 @@ async fn create_endpoint(
     if !app.hub.owns_device(&user, request.device_id).await {
         return Err((StatusCode::NOT_FOUND, "device not found".into()));
     }
+    if !app
+        .hub
+        .verified_environment(&user, request.device_id, &request.environment_id)
+        .await
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            "设备离线、Docker 环境未核验或已变化，请升级 Agent 并重新读取容器。".into(),
+        ));
+    }
     if !manager_access::mutation_allowed(&app, &headers, &user) {
         return Err((
             StatusCode::FORBIDDEN,
@@ -313,18 +356,11 @@ async fn create_endpoint(
         }
         access_public_url(request.id, domain)
     };
-    let request_id = request.id;
     let endpoint = app
         .endpoints
-        .create(&user, request, public_url)
+        .create_with_trust(&user, request, public_url, app.trusted_prefix)
         .await
         .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
-    if app.trusted_prefix {
-        app.endpoints
-            .trust(&user, request_id)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    }
     sync_endpoint(&app, &user, &endpoint).await;
     Ok((
         StatusCode::CREATED,
@@ -538,12 +574,24 @@ async fn dispatch(
             };
         }
     }
-    front
+    let owner = if request.uri().path().starts_with("/api/") {
+        front.app.auth.identify(request.headers(), peer.ip()).ok()
+    } else {
+        None
+    };
+    let mut response = front
         .management
         .clone()
         .oneshot(request)
         .await
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    if let Some(owner) = owner {
+        response.headers_mut().insert(
+            "x-cofleet-scope",
+            cofleet::auth::owner_scope(&owner).parse().unwrap(),
+        );
+    }
+    response
 }
 async fn whoami(
     State(app): State<App>,
@@ -552,7 +600,7 @@ async fn whoami(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let user = app.auth.identify(&headers, peer.ip())?;
     Ok(Json(
-        serde_json::json!({ "user":user, "auth":app.auth.mode, "version":env!("CARGO_PKG_VERSION"), "access_mode":if app.trusted_prefix {"trusted_prefix"}else if app.access_domain.is_some(){"isolated_domain"}else{"disabled"} }),
+        serde_json::json!({ "user":user, "scope":cofleet::auth::owner_scope(&user), "auth":app.auth.mode, "version":env!("CARGO_PKG_VERSION"), "access_mode":if app.trusted_prefix {"trusted_prefix"}else if app.access_domain.is_some(){"isolated_domain"}else{"disabled"} }),
     ))
 }
 async fn devices(
@@ -886,7 +934,7 @@ async fn main() -> Result<()> {
             token,
             trusted_ingress: args.trusted_ingress_ip,
         }),
-        hub: Hub::default(),
+        hub: Hub::persistent(endpoints.clone()).await?,
         connections: Arc::new(tokio::sync::Semaphore::new(256)),
         endpoints,
         access_domain: args
@@ -998,6 +1046,10 @@ async fn main() -> Result<()> {
                 get(access_endpoints).post(create_endpoint),
             )
             .route(
+                "/api/v1/access-endpoints/{id}/binding",
+                put(rebind_endpoint),
+            )
+            .route(
                 "/api/v1/access-endpoints/{id}",
                 patch(patch_endpoint).delete(delete_endpoint),
             )
@@ -1009,7 +1061,7 @@ async fn main() -> Result<()> {
     });
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
     eprintln!(
-        "Control hub listening on {}; state is not persisted",
+        "Control hub listening on {}; device snapshots and access entries are persisted, live sessions are ephemeral",
         listener.local_addr()?
     );
     axum::serve(
@@ -1021,4 +1073,70 @@ async fn main() -> Result<()> {
     })
     .await?;
     Ok(())
+}
+
+#[derive(serde::Deserialize)]
+struct RebindInput {
+    revision: u64,
+    #[serde(flatten)]
+    input: EndpointInput,
+}
+async fn rebind_endpoint(
+    State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(id): Path<uuid::Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<RebindInput>,
+) -> Result<Json<EndpointView>, (StatusCode, String)> {
+    let user = app
+        .auth
+        .identify(&headers, peer.ip())
+        .map_err(|s| (s, "authentication failed".into()))?;
+    if !request_marked(&headers) || !manager_access::mutation_allowed(&app, &headers, &user) {
+        return Err((StatusCode::FORBIDDEN, "管理会话或来源校验失败。".into()));
+    }
+    let old = app
+        .endpoints
+        .get(&user, id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "endpoint not found".into()))?;
+    if app.trusted_prefix && !input.input.trusted_application {
+        return Err((
+            StatusCode::PRECONDITION_FAILED,
+            "请重新确认你信任当前应用和环境。".into(),
+        ));
+    }
+    let request = input.input.request;
+    if !app
+        .hub
+        .verified_environment(&user, request.device_id, &request.environment_id)
+        .await
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            "目标环境尚未核验或设备离线，请重新读取容器。".into(),
+        ));
+    }
+    let saved = app
+        .endpoints
+        .rebind_with_trust(&user, id, input.revision, request, app.trusted_prefix)
+        .await
+        .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "endpoint not found".into()))?;
+    app.access_sessions.revoke(id);
+    app.hub.cancel_access_endpoint(&user, id);
+    let _ = app
+        .hub
+        .observe(
+            &user,
+            old.definition.device_id,
+            cofleet::docker_observe::ObserveRequest::Revoke {
+                endpoint_id: id,
+                revision: saved.definition.revision,
+            },
+        )
+        .await;
+    sync_endpoint(&app, &user, &saved).await;
+    Ok(Json(endpoint_view(&app, saved).await))
 }

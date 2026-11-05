@@ -89,10 +89,10 @@ async fn run_agent(
             None
         },
         observer: if args.docker_observe {
-            Some(cofleet::docker_observe::DockerObserver::open(
-                &args.data_dir,
-                config.device_id,
-            )?)
+            Some(
+                cofleet::docker_observe::DockerObserver::open(&args.data_dir, config.device_id)
+                    .await?,
+            )
         } else {
             None
         },
@@ -145,6 +145,15 @@ async fn run_agent(
             loop {
                 interval.tick().await;
                 workspace.reconcile().await;
+            }
+        })
+    });
+    let observer_monitor = state.lock().await.observer.clone().map(|observer| {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                let _ = observer.refresh_engine().await;
             }
         })
     });
@@ -217,6 +226,9 @@ async fn run_agent(
         }
     }
     heartbeat.abort();
+    if let Some(worker) = observer_monitor {
+        worker.abort();
+    }
     if let Some(worker) = docker_worker {
         worker.abort();
     }

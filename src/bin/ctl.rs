@@ -71,6 +71,38 @@ enum Command {
     },
     /// 显示配置路径，不输出凭据；修改连接设置后重启 Agent
     ConfigPath,
+    /// Install/upgrade a Linux login-session Agent without root or new device identity
+    UserService {
+        #[command(subcommand)]
+        command: UserServiceCommand,
+    },
+}
+#[derive(Subcommand)]
+enum UserServiceCommand {
+    Install {
+        #[arg(long)]
+        agent: PathBuf,
+        #[arg(long)]
+        no_start: bool,
+        #[arg(long)]
+        docker: bool,
+        #[arg(long)]
+        docker_observe: bool,
+        #[arg(long)]
+        workspace_image: Option<String>,
+        #[arg(long)]
+        build_deploy: bool,
+    },
+    Upgrade {
+        #[arg(long)]
+        agent: PathBuf,
+    },
+    Start,
+    Stop,
+    Restart,
+    Status,
+    Logs,
+    Uninstall,
 }
 #[derive(Subcommand)]
 enum DockerCommand {
@@ -156,6 +188,39 @@ async fn main() -> Result<()> {
             }
             .save(&args.data_dir)?;
             println!("Created {}", args.data_dir.join("agent.toml").display());
+        }
+        Command::UserService { command } => {
+            use cofleet::user_service as service;
+            match command {
+                UserServiceCommand::Install {
+                    agent,
+                    no_start,
+                    docker,
+                    docker_observe,
+                    workspace_image,
+                    build_deploy,
+                } => service::install(
+                    &agent,
+                    service::Options {
+                        data_dir: args.data_dir,
+                        docker,
+                        docker_observe,
+                        workspace_image,
+                        build_deploy,
+                    },
+                    no_start,
+                )?,
+                UserServiceCommand::Upgrade { agent } => service::upgrade(&agent)?,
+                action => service::action(match action {
+                    UserServiceCommand::Start => "start",
+                    UserServiceCommand::Stop => "stop",
+                    UserServiceCommand::Restart => "restart",
+                    UserServiceCommand::Status => "status",
+                    UserServiceCommand::Logs => "logs",
+                    UserServiceCommand::Uninstall => "uninstall",
+                    _ => unreachable!(),
+                })?,
+            }
         }
         Command::ConfigPath => println!("{}", args.data_dir.join("agent.toml").display()),
         command => {

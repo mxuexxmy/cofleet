@@ -15,14 +15,27 @@ try{
  const context=await browser.newContext();await context.addCookies([{name:'Lzc-Auth-Token',value:token,domain:'.'+box.boxDomain,path:'/',secure:true,httpOnly:true,sameSite:'Lax'}]);
  const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(base);await page.locator('.device').first().waitFor();await page.locator('#nav-applications').click();
  const who=await (await context.request.get(base+'/api/whoami')).json();assert.equal(who.access_mode,'trusted_prefix');
- const list=await (await context.request.get(base+'/api/v1/access-endpoints')).json();let endpoint=list.find(e=>e.name==='HTTP 验证');
- if(!endpoint){
-  await page.locator('#endpoint-discover').click();await page.waitForFunction(()=>[...document.querySelector('#endpoint-target').options].some(o=>o.textContent.includes('cofleet-http-test')));
-  const value=await page.locator('#endpoint-target option').evaluateAll(options=>options.find(o=>o.textContent.includes('cofleet-http-test')).value);
-  await page.locator('#endpoint-target').selectOption(value);await page.locator('#endpoint-binding').selectOption('container');await page.locator('#endpoint-name').fill('HTTP 验证');await page.locator('#endpoint-trust').check();
-  const pending=page.waitForResponse(r=>r.url()===base+'/api/v1/access-endpoints'&&r.request().method()==='POST');await page.locator('#endpoint-submit').click();const created=await pending;assert.equal(created.status(),201,await created.text());endpoint=await created.json();
+ page.on('dialog', d => d.accept());
+ const nodes=await (await context.request.get(base+'/api/v1/devices')).json();const targetNode=nodes.find(d=>d.online&&d.docker_observe?.engine_verified&&d.docker_observe?.endpoint_tunnel);assert.ok(targetNode,'a verified observation Agent must be online');
+ await page.locator('#endpoint-device').selectOption(targetNode.device_id);
+ async function ensureEndpoint(name,containerName,port) {
+  await page.locator('#endpoint-discover').click();await page.waitForFunction(({name,port})=>[...document.querySelector('#endpoint-target').options].some(o=>o.textContent.includes(name)&&o.textContent.includes(port+'→')),{name:containerName,port});
+  const value=await page.locator('#endpoint-target option').evaluateAll((options,{name,port})=>options.find(o=>o.textContent.includes(name)&&o.textContent.includes(port+'→')).value,{name:containerName,port});
+  await page.locator('#endpoint-target').selectOption(value);await page.locator('#endpoint-binding').selectOption('container');await page.locator('#endpoint-protocol').selectOption('http');await page.locator('#endpoint-name').fill(name);await page.locator('#endpoint-trust').check();
+  const values=await (await context.request.get(base+'/api/v1/access-endpoints')).json();let entry=values.find(e=>e.name===name);
+  const selected=value.split(':')[0];const env=await page.evaluate(id=>observedCatalogs.get(id).environment_id,targetNode.device_id);
+  if(entry) {
+   assert.equal(entry.binding.kind,'container','refuse to alter an unrelated named fixture');assert.equal(entry.binding.container_id,selected,'refuse to alter an unrelated named fixture');
+   if(entry.environment_id!==env||entry.device_id!==targetNode.device_id) {
+    const pending=page.waitForResponse(r=>r.url()===base+'/api/v1/access-endpoints/'+entry.id+'/binding'&&r.request().method()==='PUT');await page.locator('#endpoint-list [data-key="'+entry.id+'"]').getByRole('button',{name:'重新确认绑定',exact:true}).click();const response=await pending;assert.equal(response.status(),200,await response.text());const updated=await response.json();assert.equal(updated.public_url,entry.public_url);entry=updated;
+   }
+  } else {
+   const pending=page.waitForResponse(r=>r.url()===base+'/api/v1/access-endpoints'&&r.request().method()==='POST');await page.locator('#endpoint-submit').click();const response=await pending;assert.equal(response.status(),201,await response.text());entry=await response.json();
+  }
+  if(!entry.enabled) {await page.locator('#endpoint-list [data-key="'+entry.id+'"]').getByRole('button',{name:'启用',exact:true}).click();await page.waitForFunction(id=>endpoints.find(e=>e.id===id)?.enabled,entry.id);entry={...entry,enabled:true};}
+  return entry;
  }
- if(endpoint&&!endpoint.enabled) {const result=await page.evaluate(async e=>{const r=await fetch('api/v1/access-endpoints/'+e.id,{method:'PATCH',headers:{'Content-Type':'application/json','X-CoFleet-Request':'1'},body:JSON.stringify({revision:e.revision,enabled:true})});return {status:r.status,value:await r.json()};},endpoint);assert.equal(result.status,200);endpoint=result.value;}
+ let endpoint=await ensureEndpoint('HTTP 验证','cofleet-http-test',8080);
  const app=await context.newPage();let response=await app.goto(endpoint.public_url);assert.equal(response.status(),200);
  await app.getByRole('heading',{name:'打开受信任应用',exact:true}).waitFor();await app.getByRole('button',{name:'继续打开',exact:true}).click();await app.getByRole('heading',{name:'授权已就绪',exact:true}).waitFor();await app.getByRole('button',{name:'打开应用',exact:true}).click();await app.getByRole('heading',{name:'HTTP 服务访问成功',exact:true}).waitFor();
  assert.ok(new URL(app.url()).hostname.startsWith('e-'));const cookies=await context.cookies(endpoint.public_url);assert.ok(cookies.some(c=>c.name==='__Host-cofleet_access'&&c.httpOnly&&c.secure));assert.ok(!cookies.some(c=>c.name==='__Host-cofleet_manager'));
@@ -30,12 +43,9 @@ try{
  const forbidden=await context.request.get(endpoint.public_url+'api/v1/devices',{maxRedirects:0});assert.equal(forbidden.status(),404); // Upstream HTTP fixture, not management API.
  // Reuse the existing, self-controlled M0 fixture for application login, headers and WebSocket.
  const fixture=JSON.parse(await readFile(new URL('.local/m0/current.json',root),'utf8'));
- let all=await (await context.request.get(base+'/api/v1/access-endpoints')).json();let loginEndpoint=all.find(e=>e.name==='登录与 WebSocket 验证'&&e.enabled);
- if(!loginEndpoint){await page.locator('#endpoint-discover').click();await page.waitForFunction(name=>[...document.querySelector('#endpoint-target').options].some(o=>o.textContent.includes(name)&&o.textContent.includes('8800→')),fixture.fixture);
- const value=await page.locator('#endpoint-target option').evaluateAll((options,name)=>options.find(o=>o.textContent.includes(name)&&o.textContent.includes('8800→')).value,fixture.fixture);
- await page.locator('#endpoint-target').selectOption(value);await page.locator('#endpoint-binding').selectOption('container');await page.locator('#endpoint-name').fill('登录与 WebSocket 验证');await page.locator('#endpoint-trust').check();const pending=page.waitForResponse(r=>r.url()===base+'/api/v1/access-endpoints'&&r.request().method()==='POST');await page.locator('#endpoint-submit').click();const response=await pending;assert.equal(response.status(),201);loginEndpoint=await response.json();}
+ const loginEndpoint=await ensureEndpoint('登录与 WebSocket 验证',fixture.fixture,8800);
  const login=await context.newPage();await login.goto(loginEndpoint.public_url);await login.getByRole('button',{name:'继续打开',exact:true}).click();await login.getByRole('button',{name:'打开应用',exact:true}).click();await login.getByRole('heading',{name:'Application login',exact:true}).waitFor();await login.locator('[name=password]').fill(fixture.password);await login.getByRole('button',{name:'Sign in',exact:true}).click();await login.getByRole('heading',{name:'Application signed in',exact:true}).waitFor();await login.waitForFunction(()=>document.querySelector('#ws')?.textContent==='m0-echo');
- const headers=await (await context.request.get(loginEndpoint.public_url+'headers',{headers:{Authorization:'Bearer m01-fixture-only'}})).json();assert.equal(headers.identity_leaked,false);assert.equal(headers.authorization,'Bearer m01-fixture-only');assert.ok(!String(headers.cookie).match(/Lzc-Auth-Token|HC-Auth-Token|__Host-cofleet/));
+ const headers=await (await context.request.get(loginEndpoint.public_url+'headers',{headers:{Authorization:'Bearer m01-fixture-only'}})).json();assert.equal(headers.identity_leaked,false);assert.equal(headers.authorization,'Bearer m01-fixture-only');assert.ok(!JSON.stringify(headers.cookies || headers.cookie || {}).match(/Lzc-Auth-Token|HC-Auth-Token|__Host-cofleet/));
  const change=async enabled=>page.evaluate(async({id,enabled})=>{const list=await (await fetch('api/v1/access-endpoints')).json();const old=list.find(e=>e.id===id);const r=await fetch('api/v1/access-endpoints/'+id,{method:'PATCH',headers:{'Content-Type':'application/json','X-CoFleet-Request':'1'},body:JSON.stringify({revision:old.revision,enabled})});return r.status;},{id:endpoint.id,enabled});
  assert.equal(await change(false),200);response=await app.goto(endpoint.public_url);assert.ok(!(await app.locator('body').innerText()).includes('HTTP 服务访问成功'));const deniedHealth=await context.request.get(endpoint.public_url+'health');assert.notEqual((await deniedHealth.text()).trim(),'ok');assert.equal(await change(true),200);
  await app.goto(endpoint.public_url);await app.getByRole('heading',{name:'打开受信任应用',exact:true}).waitFor();await app.getByRole('button',{name:'继续打开',exact:true}).click();await app.getByRole('button',{name:'打开应用',exact:true}).click();await app.getByRole('heading',{name:'HTTP 服务访问成功',exact:true}).waitFor();
